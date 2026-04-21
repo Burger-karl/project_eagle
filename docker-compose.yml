@@ -1,0 +1,71 @@
+version: "3.9"
+
+services:
+
+  # ── Django Middleware API ────────────────────────────────────
+  web:
+    build: .
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  # ── Celery Worker (invoice processing) ─────────────────────
+  celery_worker:
+    build: .
+    command: celery -A config worker --loglevel=info --concurrency=4
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  # ── Celery Beat (scheduled tasks — poll every 5 min) ────────
+  celery_beat:
+    build: .
+    command: celery -A config beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  # ── PostgreSQL (middleware database) ────────────────────────
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB:       project_eagle
+      POSTGRES_USER:     eagle_user
+      POSTGRES_PASSWORD: eagle_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  # ── Redis (Celery broker + result backend) ──────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+# NOTE: The Sage 200 MSSQL database (client's .bak) runs on
+# your local SQL Server instance — NOT in Docker.
+# Set SAGE200_MSSQL_SERVER in .env to point to it.
