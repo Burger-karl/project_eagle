@@ -1,22 +1,23 @@
 """
-FIRS MBS API Client
-Handles all communication with the FIRS NRS e-Invoice platform.
+FIRS MBS API Client — Multi-APP Support
+Supports DigiTax and Interswitch as Access Point Providers.
+Switch between them via APP_PROVIDER in your .env file.
 
-Endpoints covered:
-    POST /invoices/b2b      — Submit B2B invoice for clearance
-    POST /invoices/b2c      — Report B2C invoice (within 24hrs)
-    POST /invoices/credit-note  — Submit credit note
-    POST /invoices/debit-note   — Submit debit note
-    GET  /invoices/{irn}    — Retrieve invoice by IRN
-    GET  /invoices/{irn}/status — Check invoice status
-    GET  /taxpayers/{tin}/validate — Validate a TIN
-    GET  /invoices          — List all invoices
+DigiTax API docs:   https://ng.docs.digitax.tech/reference
+Interswitch:        Contact einvoice@interswitchgroup.com for credentials
+
+DigiTax Flow (from official docs):
+    1. Create Party (buyer)     → POST /parties
+    2. Create Item (line item)  → POST /items
+    3. Create Invoice           → POST /invoices
+    4. DigiTax generates IRN    → invoice status: DRAFT
+    5. DigiTax validates w/ NRS → invoice status: PENDING (QR code generated)
+    6. DigiTax signs w/ NRS     → invoice status: COMPLETE
+    7. IRN + QR code returned to you
 
 Authentication:
-    Every request requires two headers:
-        api-key:    your FIRS API key
-        secret-key: your FIRS secret key
-    Both are generated from einvoice.firs.gov.ng dashboard.
+    DigiTax:     X-API-Key header (get from digitax.tech dashboard)
+    Interswitch: Authorization: Bearer {token} (OAuth2)
 """
 
 import time
@@ -27,254 +28,368 @@ from django.conf import settings
 
 logger = logging.getLogger("apps.firs")
 
-# Max time to wait for FIRS API response
-REQUEST_TIMEOUT = 30
+# ── APP Provider configs ──────────────────────────────────────
+APP_CONFIGS = {
+    "digitax": {
+        "sandbox_url":    "https://api.digitax.tech/ng",
+        "production_url": "https://api.digitax.tech/ng",
+        "auth_type":      "x-api-key",    # X-API-Key header
+        "api_version":    "/v1",
+    },
+    "interswitch": {
+        "sandbox_url":    "https://sandbox.interswitchng.com/einvoice/api",
+        "production_url": "https://interswitchng.com/einvoice/api",
+        "auth_type":      "bearer",        # OAuth2 Bearer token
+        "api_version":    "/v1",
+    },
+    "firs_direct": {
+        # Direct FIRS MBS — confirmed from portal CSP headers
+        "sandbox_url":    "https://api.firsmbs.com",
+        "production_url": "https://api.firsmbs.com",
+        "auth_type":      "api-key",       # api-key + secret-key headers
+        "api_version":    "/api/v1",
+    },
+}
 
-# Retry settings for transient failures
-MAX_RETRIES = 3
-RETRY_BACKOFF = [5, 15, 30]  # seconds between retries
+REQUEST_TIMEOUT = 30
+MAX_RETRIES     = 3
+RETRY_BACKOFF   = [5, 15, 30]
 
 
 class FIRSClient:
     """
-    Thread-safe FIRS MBS API client.
-    One instance per request — do not share across threads.
+    Unified FIRS MBS API client supporting multiple Access Point Providers.
 
     Usage:
-        client = FIRSClient(api_key, secret_key)
-        result = client.submit_b2b_invoice(ubl_payload)
+        # Uses APP_PROVIDER from settings (set in .env)
+        client = FIRSClient()
+
+        # Or specify provider explicitly
+        client = FIRSClient(provider="digitax")
+        client = FIRSClient(provider="interswitch")
     """
 
-    def __init__(self, api_key: str = None, secret_key: str = None):
-        self.base_url   = settings.FIRS_BASE_URL
-        self.api_key    = api_key or settings.FIRS_API_KEY
-        self.secret_key = secret_key or settings.FIRS_SECRET_KEY
+    def __init__(
+        self,
+        api_key: str    = None,
+        secret_key: str = None,
+        provider: str   = None,
+    ):
+        self.provider = (
+            provider
+            or getattr(settings, "APP_PROVIDER", "digitax")
+        ).lower()
 
-        if not self.api_key or not self.secret_key:
-            raise FIRSConfigError(
-                "FIRS_API_KEY and FIRS_SECRET_KEY must be set in .env — "
-                "get them from einvoice.firs.gov.ng"
+        if self.provider not in APP_CONFIGS:
+            raise ValueError(
+                f"Unknown APP provider: '{self.provider}'. "
+                f"Choose from: {list(APP_CONFIGS.keys())}"
             )
 
-    # ──────────────────────────────────────────────────────────
-    # AUTH HEADERS
-    # ──────────────────────────────────────────────────────────
+        cfg             = APP_CONFIGS[self.provider]
+        use_production  = getattr(settings, "USE_FIRS_PRODUCTION", False)
+        base            = cfg["production_url"] if use_production else cfg["sandbox_url"]
+        self.base_url   = base + cfg["api_version"]
+        self.auth_type  = cfg["auth_type"]
+
+        # Credentials — from args or settings
+        self.api_key    = api_key    or getattr(settings, "FIRS_API_KEY",    "")
+        self.secret_key = secret_key or getattr(settings, "FIRS_SECRET_KEY", "")
+
+        logger.info(
+            f"[FIRS] Using provider: {self.provider.upper()} | "
+            f"{'PRODUCTION' if use_production else 'SANDBOX'} | "
+            f"Base: {self.base_url}"
+        )
+
+    # ── AUTH HEADERS ──────────────────────────────────────────
 
     def _headers(self) -> Dict:
-        """Build authentication headers for every FIRS API request."""
-        return {
-            "api-key":      self.api_key,
-            "secret-key":   self.secret_key,
-            "Content-Type": "application/json",
-            "Accept":       "application/json",
-        }
+        """Build authentication headers for the selected APP provider."""
 
-    # ──────────────────────────────────────────────────────────
-    # CORE REQUEST METHOD
-    # ──────────────────────────────────────────────────────────
+        if self.auth_type == "x-api-key":
+            # DigiTax: single X-API-Key header
+            return {
+                "X-API-Key":    self.api_key,
+                "Content-Type": "application/json",
+                "Accept":       "application/json",
+            }
+
+        elif self.auth_type == "bearer":
+            # Interswitch: OAuth2 Bearer token
+            return {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type":  "application/json",
+                "Accept":        "application/json",
+            }
+
+        else:
+            # FIRS direct: api-key + secret-key
+            return {
+                "api-key":      self.api_key,
+                "secret-key":   self.secret_key,
+                "Content-Type": "application/json",
+                "Accept":       "application/json",
+            }
+
+    # ── CORE REQUEST ──────────────────────────────────────────
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
         """
-        Central HTTP request handler with:
-        - Structured logging of every request/response
-        - Automatic retry on transient failures (5xx errors)
-        - Consistent error response format
-
-        Returns:
-            {
-                "success": bool,
-                "status_code": int,
-                "data": dict,        # on success
-                "error": str,        # on failure
-                "duration_ms": int   # API call duration
-            }
+        Central HTTP request handler with retry logic and structured logging.
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
 
         for attempt in range(1, MAX_RETRIES + 1):
-            start_time = time.time()
+            start = time.time()
             try:
                 logger.info(
-                    f"FIRS API {method.upper()} {endpoint} (attempt {attempt})"
+                    f"[{self.provider.upper()}] {method.upper()} "
+                    f"{endpoint} (attempt {attempt})"
                 )
 
                 response = requests.request(
-                    method,
-                    url,
+                    method, url,
                     headers=self._headers(),
                     timeout=REQUEST_TIMEOUT,
                     **kwargs,
                 )
 
-                duration_ms = int((time.time() - start_time) * 1000)
-
+                duration_ms = int((time.time() - start) * 1000)
                 logger.info(
-                    f"FIRS API response: {response.status_code} in {duration_ms}ms"
+                    f"[{self.provider.upper()}] Response: "
+                    f"{response.status_code} in {duration_ms}ms"
                 )
 
-                # ── Success ───────────────────────────────────
+                # Parse response body
+                try:
+                    data = response.json() if response.content else {}
+                except Exception:
+                    data = {"raw": response.text[:500]}
+
+                # Success
                 if response.status_code in (200, 201):
                     return {
                         "success":     True,
                         "status_code": response.status_code,
-                        "data":        response.json(),
+                        "data":        data,
                         "duration_ms": duration_ms,
+                        "provider":    self.provider,
                     }
 
-                # ── Client error (4xx) — don't retry ─────────
+                # Client error (4xx) — don't retry
                 if 400 <= response.status_code < 500:
-                    error_body = {}
-                    try:
-                        error_body = response.json()
-                    except Exception:
-                        error_body = {"raw": response.text}
-
                     logger.error(
-                        f"FIRS API client error {response.status_code}: {error_body}"
+                        f"[{self.provider.upper()}] Client error "
+                        f"{response.status_code}: {data}"
                     )
                     return {
                         "success":     False,
                         "status_code": response.status_code,
-                        "error":       error_body,
+                        "error":       data,
                         "duration_ms": duration_ms,
+                        "provider":    self.provider,
                     }
 
-                # ── Server error (5xx) — retry ────────────────
+                # Server error (5xx) — retry
                 if attempt < MAX_RETRIES:
                     wait = RETRY_BACKOFF[attempt - 1]
                     logger.warning(
-                        f"FIRS API server error {response.status_code}. "
-                        f"Retrying in {wait}s (attempt {attempt}/{MAX_RETRIES})"
+                        f"[{self.provider.upper()}] Server error "
+                        f"{response.status_code}. Retrying in {wait}s"
                     )
                     time.sleep(wait)
                     continue
 
-                # All retries exhausted
                 return {
                     "success":     False,
                     "status_code": response.status_code,
-                    "error":       f"FIRS server error after {MAX_RETRIES} attempts: {response.text[:500]}",
-                    "duration_ms": duration_ms,
+                    "error":       f"Server error after {MAX_RETRIES} attempts: {data}",
+                    "provider":    self.provider,
                 }
 
             except requests.exceptions.ConnectionError as e:
-                logger.error(f"FIRS API connection failed: {e}")
+                logger.error(f"[{self.provider.upper()}] Connection failed: {e}")
                 if attempt < MAX_RETRIES:
                     time.sleep(RETRY_BACKOFF[attempt - 1])
                     continue
-                return {"success": False, "error": f"Connection failed: {e}"}
+                return {"success": False, "error": f"Connection failed: {e}", "provider": self.provider}
 
             except requests.exceptions.Timeout:
-                logger.error(f"FIRS API timed out after {REQUEST_TIMEOUT}s")
+                logger.error(f"[{self.provider.upper()}] Request timed out")
                 if attempt < MAX_RETRIES:
                     time.sleep(RETRY_BACKOFF[attempt - 1])
                     continue
-                return {"success": False, "error": "FIRS API request timed out"}
+                return {"success": False, "error": "Request timed out", "provider": self.provider}
 
             except Exception as e:
-                logger.exception(f"Unexpected error calling FIRS API: {e}")
-                return {"success": False, "error": str(e)}
+                logger.exception(f"[{self.provider.upper()}] Unexpected error: {e}")
+                return {"success": False, "error": str(e), "provider": self.provider}
 
-    # ──────────────────────────────────────────────────────────
-    # TIN VALIDATION — Always call before B2B submission
-    # ──────────────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════
+    # DIGITAX-SPECIFIC METHODS
+    # DigiTax has a different flow: Create Party → Create Item → Create Invoice
+    # ════════════════════════════════════════════════════════
 
-    def validate_tin(self, tin: str) -> Dict:
+    def create_party(self, party_data: Dict) -> Dict:
         """
-        Validate a buyer's TIN against the FIRS database.
-        Always call this before submitting a B2B invoice.
+        DigiTax Step 1: Create or register a buyer party.
+        Must be done before creating an invoice.
 
-        Returns:
-            {"success": True, "data": {"business_name": "...", "tin": "..."}}
+        party_data:
+        {
+            "name": "Buyer Company Ltd",
+            "tin":  "12345678-0001",
+            "address": "123 Buyer Street, Lagos",
+            "email": "buyer@company.com",
+            "phone": "+2348012345678"
+        }
         """
-        return self._request("GET", f"/taxpayers/{tin}/validate")
+        return self._request("POST", "/parties", json=party_data)
 
-    # ──────────────────────────────────────────────────────────
-    # B2B INVOICE SUBMISSION (pre-clearance required)
-    # ──────────────────────────────────────────────────────────
+    def get_or_create_party(self, tin: str, name: str, address: str = "", email: str = "") -> Dict:
+        """
+        Get an existing party by TIN, or create if not found.
+        Convenience method to avoid duplicate party creation errors.
+        """
+        # Try to find existing party
+        result = self._request("GET", f"/parties?tin={tin}")
+        if result["success"]:
+            parties = result["data"].get("data", result["data"])
+            if isinstance(parties, list) and parties:
+                logger.info(f"[DigiTax] Found existing party for TIN {tin}")
+                return {"success": True, "data": parties[0]}
+
+        # Create new party
+        return self.create_party({
+            "name":    name,
+            "tin":     tin,
+            "address": address,
+            "email":   email,
+        })
+
+    def create_item(self, item_data: Dict) -> Dict:
+        """
+        DigiTax Step 2: Create an item (product/service being invoiced).
+
+        item_data:
+        {
+            "name":        "IT Consulting Services",
+            "description": "Software development services",
+            "unit_price":  500000,
+            "tax_rate":    7.5,
+            "unit_code":   "EA"
+        }
+        """
+        return self._request("POST", "/items", json=item_data)
+
+    def create_invoice(self, invoice_data: Dict) -> Dict:
+        """
+        DigiTax Step 3: Create and submit an invoice.
+        DigiTax handles IRN generation, NRS validation, and signing automatically.
+
+        On success:
+            data.irn      — Invoice Reference Number
+            data.qr_code  — QR code for buyer verification
+            data.status   — COMPLETE (or DRAFT/PENDING/FAILED)
+
+        invoice_data format (DigiTax schema):
+        {
+            "supplier_tin":   "04702493-0001",
+            "buyer_party_id": "party-uuid-from-step-1",
+            "invoice_number": "INV0001",
+            "invoice_date":   "2025-03-14",
+            "due_date":       "2025-04-14",
+            "currency":       "NGN",
+            "lines": [
+                {
+                    "item_id":    "item-uuid-from-step-2",
+                    "quantity":   1,
+                    "unit_price": 500000,
+                    "tax_rate":   7.5
+                }
+            ]
+        }
+        """
+        return self._request("POST", "/invoices", json=invoice_data)
+
+    def get_invoice(self, invoice_id: str) -> Dict:
+        """Get invoice by DigiTax invoice ID."""
+        return self._request("GET", f"/invoices/{invoice_id}")
+
+    def list_invoices(self, page: int = 1, per_page: int = 20) -> Dict:
+        """List all invoices on this DigiTax account."""
+        return self._request("GET", f"/invoices?page={page}&per_page={per_page}")
+
+    # ════════════════════════════════════════════════════════
+    # GENERIC METHODS (work across all providers)
+    # ════════════════════════════════════════════════════════
 
     def submit_b2b_invoice(self, ubl_payload: Dict) -> Dict:
         """
-        Submit a B2B invoice for FIRS clearance.
-        FIRS MUST clear it BEFORE you send it to the buyer.
-
-        On success:
-            data.irn  — Invoice Reference Number
-            data.csid — Cryptographic Stamp Identifier
+        Submit B2B invoice — routes to correct provider endpoint.
+        For DigiTax: use create_invoice() with the mapped payload instead.
+        This method normalises the call for the pipeline.
         """
-        return self._request("POST", "/invoices/b2b", json=ubl_payload)
-
-    # ──────────────────────────────────────────────────────────
-    # B2C INVOICE REPORTING (report within 24 hours)
-    # ──────────────────────────────────────────────────────────
+        if self.provider == "digitax":
+            # DigiTax doesn't use raw UBL — it has its own schema
+            # The pipeline should call create_invoice() directly
+            # This is a fallback passthrough
+            return self.create_invoice(ubl_payload)
+        elif self.provider == "interswitch":
+            return self._request("POST", "/invoices/b2b", json=ubl_payload)
+        else:
+            # FIRS direct
+            return self._request("POST", "/invoices/b2b", json=ubl_payload)
 
     def report_b2c_invoice(self, ubl_payload: Dict) -> Dict:
-        """
-        Report a B2C invoice to FIRS within 24 hours of issuing it.
-        No pre-clearance needed — but report is mandatory.
+        """Report B2C invoice — routes to correct provider endpoint."""
+        if self.provider == "digitax":
+            return self.create_invoice({**ubl_payload, "type": "b2c"})
+        elif self.provider == "interswitch":
+            return self._request("POST", "/invoices/b2c", json=ubl_payload)
+        else:
+            return self._request("POST", "/invoices/b2c", json=ubl_payload)
 
-        On success:
-            data.qr_code — QR code for buyer verification
-        """
-        return self._request("POST", "/invoices/b2c", json=ubl_payload)
-
-    # ──────────────────────────────────────────────────────────
-    # CREDIT & DEBIT NOTES
-    # ──────────────────────────────────────────────────────────
-
-    def submit_credit_note(self, ubl_payload: Dict) -> Dict:
-        """
-        Submit a credit note against a previously cleared invoice.
-        ubl_payload must include BillingReference.ID = original IRN.
-        """
-        return self._request("POST", "/invoices/credit-note", json=ubl_payload)
-
-    def submit_debit_note(self, ubl_payload: Dict) -> Dict:
-        """
-        Submit a debit note against a previously cleared invoice.
-        ubl_payload must include BillingReference.ID = original IRN.
-        """
-        return self._request("POST", "/invoices/debit-note", json=ubl_payload)
-
-    # ──────────────────────────────────────────────────────────
-    # INVOICE RETRIEVAL
-    # ──────────────────────────────────────────────────────────
-
-    def get_invoice(self, irn: str) -> Dict:
-        """Retrieve a cleared invoice by its IRN."""
-        return self._request("GET", f"/invoices/{irn}")
-
-    def get_invoice_status(self, irn: str) -> Dict:
-        """Check the current status of a submitted invoice."""
-        return self._request("GET", f"/invoices/{irn}/status")
-
-    def list_invoices(self, page: int = 1, page_size: int = 50, filters: Dict = None) -> Dict:
-        """List all invoices submitted under the registered TIN."""
-        params = {"page": page, "page_size": page_size, **(filters or {})}
-        return self._request("GET", "/invoices", params=params)
-
-    # ──────────────────────────────────────────────────────────
-    # HEALTH CHECK
-    # ──────────────────────────────────────────────────────────
+    def validate_tin(self, tin: str) -> Dict:
+        """Validate a TIN against the NRS database."""
+        if self.provider == "digitax":
+            return self._request("GET", f"/parties/validate?tin={tin}")
+        elif self.provider == "interswitch":
+            return self._request("GET", f"/taxpayers/{tin}/validate")
+        else:
+            return self._request("GET", f"/taxpayers/{tin}/validate")
 
     def health_check(self) -> Dict:
-        """
-        Quick check that FIRS API credentials are valid.
-        Validates the supplier TIN registered in settings.
-        """
-        tin = getattr(settings, "FIRS_TIN", "") or getattr(settings, "CLIENT_COMPANY_TIN", "")
-        if not tin:
-            return {"success": False, "error": "FIRS_TIN not set in environment"}
-        return self.validate_tin(tin)
+        """Test API credentials and connection."""
+        if self.provider == "digitax":
+            result = self._request("GET", "/invoices?page=1&per_page=1")
+            return {
+                "success":  result["success"],
+                "provider": self.provider,
+                "base_url": self.base_url,
+                "auth_configured": bool(self.api_key),
+                "detail": result.get("data") or result.get("error"),
+            }
+        else:
+            tin = getattr(settings, "FIRS_TIN", "") or getattr(settings, "CLIENT_COMPANY_TIN", "")
+            result = self.validate_tin(tin) if tin else {"success": False, "error": "No TIN configured"}
+            return {
+                "success":  result["success"],
+                "provider": self.provider,
+                "base_url": self.base_url,
+                "auth_configured": bool(self.api_key),
+                "detail": result.get("data") or result.get("error"),
+            }
 
 
 # ── Custom Exceptions ─────────────────────────────────────────
 
 class FIRSConfigError(Exception):
-    """Raised when FIRS credentials are missing or misconfigured."""
+    """Raised when API credentials are missing or misconfigured."""
     pass
 
 
 class FIRSSubmissionError(Exception):
-    """Raised when an invoice submission to FIRS fails definitively."""
+    """Raised when invoice submission fails definitively."""
     pass

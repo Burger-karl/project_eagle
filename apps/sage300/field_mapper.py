@@ -1,67 +1,71 @@
 """
-Sage 200 Evolution → FIRS UBL Field Mapper
-Maps raw Evolution column names to the 55 mandatory FIRS UBL fields.
+Sage 300 ERP → FIRS UBL Field Mapper
+Maps raw Sage 300 (Accpac) column names to the 55 mandatory FIRS UBL fields.
 
-Column names confirmed from _bvARTransactionsFull and _btblInvoiceLines:
-    invoice_id          → AutoIdx
-    invoice_number      → InvNumber
-    invoice_date        → TxDate
-    transaction_type    → iTransactionType (1=Invoice, 2=CreditNote, 3=DebitNote)
-    customer_name       → Client.Name
-    buyer_address1-4    → Client.Physical1-4
-    gross_amount        → calculated from Debit/Credit
-    vat_amount          → Tax_Amount
-    net_amount          → gross - vat
-    lines.description   → cDescription
-    lines.quantity      → fQuantity
-    lines.unit_price    → fUnitPriceExcl
-    lines.line_net      → fQuantityLineTotExcl
-    lines.vat_amount    → fQuantityLineTaxAmount
-    lines.vat_rate      → fTaxRate
+Sage 300 column name conventions:
+    ARINVOICE:  IDTRX, DATEINVC, DATEDUE, TEXTTRX, IDCUST
+                AMTGROSDOC, AMTTAXDOC, AMTDUEDOC, CODECURN, RATEXCHR
+    ARINVOICED: CNTLINE, IDITEM, TEXTDESC, QTYINVC, AMTPRIC,
+                AMTEXTN, AMTTAX, RATETAX, UNITMEAS
+    ARCUSTOMER: NAMECUST, TEXTSTRE1-3, NAMECITY, CODEPSTL, CODECTRY
+
+Transaction types:
+    1 → Invoice     → FIRS document type 380
+    2 → Debit Note  → FIRS document type 383
+    3 → Credit Note → FIRS document type 381
 """
 
 import logging
-from datetime import date
 from decimal import Decimal
 from typing import Dict, Optional
 
 from apps.invoices.models import BuyerTINMapping, InvoiceType, DocumentType
 from utils.currency import get_ngn_exchange_rate
 
-logger = logging.getLogger("apps.sage200")
+logger = logging.getLogger("apps.sage300")
 
-# ── Evolution transaction type → FIRS document type code ──────
+# ── Sage 300 transaction type → FIRS document type ────────────
 DOCUMENT_TYPE_MAP = {
-    1: DocumentType.INVOICE,      # Invoice
-    2: DocumentType.CREDIT_NOTE,  # Credit Note
-    3: DocumentType.DEBIT_NOTE,   # Debit Note
+    1: DocumentType.INVOICE,
+    2: DocumentType.DEBIT_NOTE,
+    3: DocumentType.CREDIT_NOTE,
 }
 
-# ── Unit of measure ID → UN/ECE unit code ─────────────────────
-# Evolution stores a numeric ID — map to FIRS-required codes
-# These are sensible defaults; refine as you see real values
+# ── Sage 300 unit of measure → UN/ECE unit code ───────────────
 UNIT_CODE_MAP = {
-    1:   "EA",   # Each
-    2:   "HUR",  # Hour
-    3:   "DAY",  # Day
-    4:   "KGM",  # Kilogram
-    5:   "LTR",  # Litre
-    6:   "MTR",  # Metre
-    7:   "BX",   # Box
-    None: "EA",  # Default
+    "EA":   "EA",
+    "EACH": "EA",
+    "HR":   "HUR",
+    "HRS":  "HUR",
+    "DAY":  "DAY",
+    "KG":   "KGM",
+    "KGM":  "KGM",
+    "L":    "LTR",
+    "LTR":  "LTR",
+    "M":    "MTR",
+    "MTR":  "MTR",
+    "BX":   "BX",
+    "BOX":  "BX",
+    "PC":   "H87",
+    "PCS":  "H87",
+    "SET":  "SET",
+    "":     "EA",
 }
 
-# ── Country name → ISO 3166-1 alpha-2 ─────────────────────────
+# ── Country code map ──────────────────────────────────────────
 COUNTRY_CODE_MAP = {
     "Nigeria":        "NG",
     "NIGERIA":        "NG",
+    "NG":             "NG",
     "United Kingdom": "GB",
     "UK":             "GB",
     "South Africa":   "ZA",
+    "ZA":             "ZA",
     "Ghana":          "GH",
-    "Kenya":          "KE",
+    "GH":             "GH",
     "United States":  "US",
     "USA":            "US",
+    "US":             "US",
 }
 
 PEPPOL_CUSTOMIZATION = (
@@ -71,14 +75,14 @@ PEPPOL_CUSTOMIZATION = (
 PEPPOL_PROFILE = "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0"
 
 
-class Sage200FieldMapper:
+class Sage300FieldMapper:
     """
-    Maps a raw Sage 200 Evolution invoice dict
-    (from Sage200ODBCClient.get_new_invoices) to the
-    structured dict needed by UBLInvoiceBuilder.
+    Maps a raw Sage 300 invoice dict
+    (from Sage300ODBCClient.get_new_invoices) to the
+    structured dict needed by UBLInvoiceBuilder or DigiTaxInvoiceBuilder.
 
     Usage:
-        mapper = Sage200FieldMapper(company, raw_invoice)
+        mapper = Sage300FieldMapper(company, raw_invoice)
         mapped = mapper.map()
     """
 
@@ -89,8 +93,8 @@ class Sage200FieldMapper:
     def map(self) -> Dict:
         """
         Perform the full field mapping.
-        Returns structured dict with all supplier-side UBL fields.
-        FIRS adds IRN, CSID, QR code and digital signature after clearance.
+        Returns a structured dict with all 51 supplier-side UBL fields.
+        FIRS adds IRN, CSID, QR code, and digital signature after clearance.
 
         Raises:
             MappingError if a required field cannot be resolved.
@@ -100,7 +104,7 @@ class Sage200FieldMapper:
                 # ── Invoice Header ──────────────────────────────
                 "invoice_number":    self._invoice_number(),
                 "invoice_date":      self._invoice_date(),
-                "due_date":          None,
+                "due_date":          self._due_date(),
                 "document_type":     self._document_type(),
                 "invoice_type":      self._invoice_type(),
                 "currency_code":     "NGN",
@@ -121,7 +125,7 @@ class Sage200FieldMapper:
                 "buyer_name":    self._safe("customer_name", "Consumer"),
                 "buyer_address": self._buyer_address(),
                 "buyer_city":    self._safe("buyer_city", ""),
-                "buyer_country": "NG",
+                "buyer_country": self._country_code(),
                 "buyer_postal":  self._safe("buyer_postal", ""),
 
                 # ── Amounts ─────────────────────────────────────
@@ -131,26 +135,26 @@ class Sage200FieldMapper:
                 "payable_amount": Decimal(str(self.raw.get("gross_amount", 0) or 0)),
 
                 # ── Payment ─────────────────────────────────────
-                "payment_means_code": "30",  # Credit transfer
+                "payment_means_code": "30",
 
                 # ── Lines ───────────────────────────────────────
                 "lines": self._map_lines(),
 
-                # ── Currency conversion ─────────────────────────
+                # ── Currency ────────────────────────────────────
                 "original_currency": self._safe("currency_code", "NGN"),
                 "exchange_rate":     self._exchange_rate(),
             }
 
             logger.debug(
-                f"[Mapper] Mapped {mapped['invoice_number']} "
+                f"[Sage300 Mapper] Mapped {mapped['invoice_number']} "
                 f"({mapped['invoice_type']}) for {self.company.name}"
             )
             return mapped
 
-        except KeyError as e:
-            raise MappingError(f"Missing field in Sage 200 data: {e}")
         except MappingError:
             raise
+        except KeyError as e:
+            raise MappingError(f"Missing field in Sage 300 data: {e}")
         except Exception as e:
             raise MappingError(
                 f"Mapping failed for invoice "
@@ -162,22 +166,29 @@ class Sage200FieldMapper:
     def _invoice_number(self) -> str:
         val = self.raw.get("invoice_number", "")
         if not val:
+            # Fallback: use batch-entry as invoice number
+            batch = self.raw.get("batch_number", "")
+            entry = self.raw.get("entry_number", "")
+            if batch and entry:
+                return f"INV-{batch}-{entry}"
             raise MappingError(
-                "InvNumber is blank in Sage 200 Evolution. "
-                "Cannot submit an invoice without an invoice number."
+                "IDTRX (invoice number) is blank in Sage 300 ARINVOICE. "
+                "Cannot submit without an invoice number."
             )
         return str(val).strip()
 
     def _invoice_date(self) -> str:
         val = self.raw.get("invoice_date")
         if not val:
-            raise MappingError("TxDate (invoice date) is blank")
-        # pyodbc returns datetime objects — extract date portion only
-        if hasattr(val, "date"):
-            return val.date().isoformat()    # datetime → date → "2025-03-12"
-        if isinstance(val, date):
-            return val.isoformat()           # pure date → "2025-03-12"
-        return str(val)[:10]                 # string → take first 10 chars
+            raise MappingError("DATEINVC (invoice date) is blank in Sage 300")
+        # Already parsed by ODBCClient into ISO string
+        return str(val)[:10]
+
+    def _due_date(self) -> Optional[str]:
+        val = self.raw.get("due_date")
+        if not val:
+            return None
+        return str(val)[:10]
 
     def _document_type(self) -> str:
         tx_type = int(self.raw.get("transaction_type", 1) or 1)
@@ -191,30 +202,28 @@ class Sage200FieldMapper:
 
     def _buyer_tin(self) -> str:
         """
-        Look up buyer TIN from BuyerTINMapping table.
-        Key is account_code (Evolution's Account field in Client table).
+        Look up buyer TIN from BuyerTINMapping.
+        Key is IDCUST (Sage 300 customer ID — e.g. 'FRC001').
         Falls back to empty string → treated as B2C.
         """
-        account_code = self._safe("account_code", "")
-        if not account_code:
+        customer_id = self._safe("customer_id", "")
+        if not customer_id:
             return ""
         try:
             mapping = BuyerTINMapping.objects.get(
                 client=self.company,
-                sage_account_ref=account_code,
+                sage_account_ref=customer_id,
             )
             return mapping.buyer_tin
         except BuyerTINMapping.DoesNotExist:
             logger.debug(
-                f"[Mapper] No TIN mapping for account '{account_code}' "
-                f"— will treat as B2C"
+                f"[Sage300 Mapper] No TIN for customer '{customer_id}' — B2C"
             )
             return ""
 
     # ── ADDRESS ───────────────────────────────────────────────
 
     def _buyer_address(self) -> str:
-        """Combine Evolution's Physical1/Physical2 into one address string."""
         parts = [
             self._safe("buyer_address1", ""),
             self._safe("buyer_address2", ""),
@@ -222,28 +231,33 @@ class Sage200FieldMapper:
         ]
         return ", ".join(p for p in parts if p.strip())
 
+    def _country_code(self) -> str:
+        country = self._safe("buyer_country", "NG")
+        return COUNTRY_CODE_MAP.get(country, "NG")
+
     # ── LINE ITEMS ────────────────────────────────────────────
 
     def _map_lines(self) -> list:
         """
-        Map _btblInvoiceLines columns to UBL line format.
+        Map ARINVOICED columns to UBL line format.
 
-        Evolution columns used:
-            cDescription            → description
-            fQuantity               → quantity
-            fUnitPriceExcl          → unit_price
-            fQuantityLineTotExcl    → line_net_amount
-            fQuantityLineTaxAmount  → vat_amount
-            fTaxRate                → vat_rate
-            iUnitsOfMeasureID       → unit_code (mapped via UNIT_CODE_MAP)
+        Sage 300 ARINVOICED columns used:
+            CNTLINE     → line_number
+            TEXTDESC    → description
+            QTYINVC     → quantity
+            AMTPRIC     → unit_price
+            AMTEXTN     → line_net_amount
+            AMTTAX      → vat_amount
+            RATETAX     → vat_rate
+            UNITMEAS    → unit_code (mapped via UNIT_CODE_MAP)
         """
         lines = self.raw.get("lines", [])
+
         if not lines:
-            # Build a single synthetic line from the header totals
-            # This handles invoices where line detail wasn't stored
+            # Synthetic line from header totals
             logger.warning(
-                f"[Mapper] No lines found for invoice "
-                f"{self.raw.get('invoice_number')} — using header totals"
+                f"[Sage300 Mapper] No lines for {self.raw.get('invoice_number')} "
+                f"— using header totals"
             )
             net = float(self.raw.get("net_amount", 0) or 0)
             vat = float(self.raw.get("vat_amount", 0) or 0)
@@ -264,22 +278,19 @@ class Sage200FieldMapper:
         for i, line in enumerate(lines, start=1):
             vat_rate = float(line.get("vat_rate", 7.5) or 7.5)
             qty      = float(line.get("quantity", 1)   or 1)
-            price    = float(line.get("unit_price_excl", 0) or 0)
+            price    = float(line.get("unit_price", 0) or 0)
             net      = float(line.get("line_net_amount", 0) or qty * price)
             vat      = float(line.get("vat_amount", 0) or 0)
-
-            # Use line_number from DB if available, else sequential
             line_num = str(line.get("line_number") or i)
+            desc     = str(line.get("description") or line.get("item_code") or "Item").strip()
+            uom      = str(line.get("unit_of_measure") or "").strip().upper()
 
             mapped_lines.append({
                 "line_number":     line_num,
-                "description":     str(line.get("description") or "Item").strip() or "Item",
+                "description":     desc or "Item",
                 "quantity":        qty,
-                "unit_code":       UNIT_CODE_MAP.get(
-                                       line.get("unit_of_measure_id"),
-                                       "EA"
-                                   ),
-                "unit_price":      price,
+                "unit_code":       UNIT_CODE_MAP.get(uom, "EA"),
+                "unit_price":      round(price, 4),
                 "line_net_amount": round(net, 2),
                 "vat_rate":        vat_rate,
                 "vat_amount":      round(vat, 2),
@@ -292,22 +303,19 @@ class Sage200FieldMapper:
     # ── CURRENCY ──────────────────────────────────────────────
 
     def _exchange_rate(self) -> Optional[float]:
-        """Get NGN exchange rate for foreign currency invoices."""
         currency = self._safe("currency_code", "NGN")
         if currency == "NGN":
             return None
-
-        # Try Evolution's stored exchange rate first
+        # Try Sage 300's stored rate first
         stored = self.raw.get("exchange_rate")
         if stored and float(stored) > 0:
             return float(stored)
-
-        # Fall back to CBN API
+        # Fallback to CBN API
         inv_date = self.raw.get("invoice_date")
         try:
             return get_ngn_exchange_rate(currency, inv_date)
         except Exception as e:
-            logger.warning(f"[Mapper] Exchange rate lookup failed for {currency}: {e}")
+            logger.warning(f"[Sage300 Mapper] Exchange rate failed for {currency}: {e}")
             return 1.0
 
     # ── HELPERS ───────────────────────────────────────────────
@@ -318,5 +326,5 @@ class Sage200FieldMapper:
 
 
 class MappingError(Exception):
-    """Raised when a required field cannot be mapped from Sage 200 to FIRS UBL."""
+    """Raised when a required field cannot be mapped from Sage 300 to FIRS UBL."""
     pass

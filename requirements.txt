@@ -1,55 +1,93 @@
-# ─── Core Framework ───────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════
+# PROJECT EAGLE — Master Requirements File
+# One file covering the entire middleware:
+#   Sage 200, Sage 300, Excel Intake, FIRS MBS,
+#   DigiTax/Interswitch APP, Cloudflare Security
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# NOTE: Also install ODBC Driver 17 for SQL Server separately.
+# Windows: https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server
+# ════════════════════════════════════════════════════════════════
+
+
+# ── Core Django Framework ─────────────────────────────────────
 Django==4.2.16
 djangorestframework==3.15.2
 django-cors-headers==4.3.1
 django-filter==24.1
 
-# ─── MSSQL Database (Sage 200 backup is SQL Server) ──────────
-mssql-django==1.4          # Django backend for Microsoft SQL Server
-pyodbc==5.1.0              # ODBC driver for direct MSSQL queries
 
-# ─── Async Task Queue (high-volume invoice processing) ────────
+# ── Databases ─────────────────────────────────────────────────
+# Your middleware own database (PostgreSQL)
+psycopg2-binary==2.9.9
+
+# Sage 200 and Sage 300 MSSQL connection (via ODBC)
+mssql-django==1.4
+pyodbc==5.1.0
+
+
+# ── Async Task Queue (invoice processing at scale) ────────────
 celery==5.3.6
-redis==5.0.1               # Celery broker & result backend
-django-celery-beat==2.6.0  # Scheduled periodic tasks
+redis==5.0.1
+django-celery-beat==2.6.0
 django-celery-results==2.5.1
 
-# ─── Multi-tenancy (one instance, many clients) ───────────────
-django-tenants==3.6.1
 
-# ─── HTTP client (FIRS API, Sage 200 REST API calls) ─────────
+# ── Excel Intake (all three methods: folder, email, upload) ───
+openpyxl==3.1.2
+pandas==2.2.2
+
+
+# ── Folder Watch - Method A ───────────────────────────────────
+watchdog==4.0.1
+
+
+# ── HTTP Client (FIRS API, Sage REST API, DigiTax) ────────────
 requests==2.32.3
 urllib3==2.2.1
 
-# ─── Cryptography (ECDSA invoice signing for FIRS) ────────────
+
+# ── Cryptography (ECDSA invoice signing required by FIRS) ─────
 cryptography==42.0.8
 ecdsa==0.19.0
 
-# ─── Data & Serialisation ─────────────────────────────────────
-lxml==5.2.2                # XML/UBL invoice building
-python-dateutil==2.9.0
 
-# ─── Environment & Config ─────────────────────────────────────
-python-dotenv==1.0.1
-django-environ==0.11.2
-
-# ─── Logging & Monitoring ─────────────────────────────────────
-sentry-sdk==2.3.1          # Error tracking in production
-
-# ─── Security ─────────────────────────────────────────────────
+# ── Security and Rate Limiting ────────────────────────────────
 django-ratelimit==4.1.0
 PyJWT==2.8.0
 
-# ─── API Docs ─────────────────────────────────────────────────
-drf-spectacular==0.27.2    # Auto OpenAPI/Swagger docs
 
-# ─── Testing ──────────────────────────────────────────────────
+# ── Environment and Config ────────────────────────────────────
+python-dotenv==1.0.1
+django-environ==0.11.2
+
+
+# ── XML and UBL Invoice Building ──────────────────────────────
+lxml==5.2.2
+
+
+# ── Date Utilities ────────────────────────────────────────────
+python-dateutil==2.9.0
+
+
+# ── Error Tracking (production) ───────────────────────────────
+sentry-sdk==2.3.1
+
+
+# ── API Documentation (auto Swagger docs at /api/docs/) ───────
+drf-spectacular==0.27.2
+
+
+# ── Testing ───────────────────────────────────────────────────
 pytest==8.2.1
 pytest-django==4.8.0
 pytest-mock==3.14.0
 factory-boy==3.3.0
-responses==0.25.3          # Mock HTTP calls in tests
+responses==0.25.3
 
-# ─── Dev Tools (remove in production) ─────────────────────────
+
+# ── Dev Tools (comment out in production) ─────────────────────
 django-debug-toolbar==4.3.0
 ipython==8.24.0

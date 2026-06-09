@@ -85,3 +85,72 @@ class ClientCompany(TimeStampedModel):
             f"PWD={self.mssql_password};"
             f"Connection Timeout=10;"
         )
+
+
+    """
+    Represents one of Link Options' accounting clients.
+    Each client has their own Sage 300 database and FIRS credentials.
+    Supports the multi-tenant structure from the Eagle proposal.
+    """
+    # ── Sage 300 MSSQL Connection ─────────────────────────────
+    sage300_mssql_server   = models.CharField(
+        max_length=255, blank=True,
+        help_text="Sage 300 SQL Server instance e.g. localhost or SERVER\\\\INSTANCE"
+    )
+    sage300_mssql_database = models.CharField(
+        max_length=255, blank=True,
+        help_text="Sage 300 company database code e.g. SAMLTD"
+    )
+    sage300_mssql_driver   = models.CharField(
+        max_length=100, blank=True,
+        default="ODBC Driver 17 for SQL Server"
+    )
+    sage300_mssql_trusted  = models.BooleanField(
+        default=True,
+        help_text="True = Windows Authentication (recommended)"
+    )
+    sage300_mssql_username = models.CharField(max_length=100, blank=True)
+    sage300_mssql_password = models.CharField(max_length=255, blank=True)
+
+    # ── Sage 300 Web API (for IRN write-back) ─────────────────
+    sage300_api_server    = models.CharField(
+        max_length=255, blank=True,
+        help_text="Sage 300 Web API server e.g. myserver.local"
+    )
+    sage300_api_company   = models.CharField(
+        max_length=20, blank=True,
+        help_text="Sage 300 company code e.g. SAMLTD"
+    )
+    sage300_api_version   = models.CharField(
+        max_length=10, blank=True, default="v1.0"
+    )
+    sage300_api_username  = models.CharField(
+        max_length=100, blank=True, default="ADMIN"
+    )
+    sage300_api_password  = models.CharField(max_length=255, blank=True)
+
+    @property
+    def sage300_odbc_connection_string(self):
+        db     = self.sage300_mssql_database or self.mssql_database
+        server = self.sage300_mssql_server   or self.mssql_server
+        driver = self.sage300_mssql_driver   or self.mssql_driver
+        trusted = getattr(self, "sage300_mssql_trusted", True)
+
+        if trusted:
+            return (
+                f"DRIVER={{{driver}}};"
+                f"SERVER={server};"
+                f"DATABASE={db};"
+                f"Trusted_Connection=yes;"
+                f"Connection Timeout=10;"
+            )
+        username = self.sage300_mssql_username or ""
+        password = self.sage300_mssql_password or ""
+        return (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={server};"
+            f"DATABASE={db};"
+            f"UID={username};"
+            f"PWD={password};"
+            f"Connection Timeout=10;"
+        )

@@ -40,15 +40,18 @@ THIRD_PARTY_APPS = [
 LOCAL_APPS = [
     "apps.core",
     "apps.sage200",
+    "apps.sage300",
     "apps.firs",
     "apps.invoices",
     "apps.reporting",
+    "apps.excel_intake",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 # ── Middleware ────────────────────────────────────────────────
 MIDDLEWARE = [
+    "cloudflare.middleware.CloudflareSecurityMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -199,6 +202,19 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.sage200.tasks.refresh_access_token",
         "schedule": 25200,
     },
+    # Poll Sage 300 every 5 minutes for new invoices
+     "poll-sage300-invoices": {
+        "task":     "apps.sage300.tasks.poll_sage300_invoices",
+        "schedule": 300,
+    },
+    "check-email-inbox": {
+        "task":     "apps.excel_intake.tasks.check_email_inbox",
+        "schedule": 300,
+    },
+    "retry-failed-excel-rows": {
+        "task":     "apps.excel_intake.tasks.retry_failed_excel_rows",
+        "schedule": 1800,
+    },
 }
 
 # ── FIRS Configuration ────────────────────────────────────────
@@ -206,7 +222,7 @@ USE_FIRS_PRODUCTION = os.getenv("FIRS_USE_PRODUCTION", "False") == "True"
 FIRS_BASE_URL = (
     os.getenv("FIRS_PRODUCTION_URL", "https://einvoice.firs.gov.ng/api/v1")
     if USE_FIRS_PRODUCTION
-    else os.getenv("FIRS_SANDBOX_URL", "https://sandbox.einvoice.firs.gov.ng/api/v1")
+    else os.getenv("FIRS_SANDBOX_URL", "https://einvoice.firs.gov.ng/api/v1")
 )
 FIRS_API_KEY    = os.getenv("FIRS_API_KEY", "")
 FIRS_SECRET_KEY = os.getenv("FIRS_SECRET_KEY", "")
@@ -299,4 +315,39 @@ LOGGING = {
         "celery":        {"handlers": ["console", "file_info"], "level": "INFO", "propagate": False},
     },
 }
+
+
+# ── APP Provider Selection ────────────────────────────────────
+# Controls which Access Point Provider the middleware uses
+# Options: "digitax" | "interswitch" | "firs_direct"
+APP_PROVIDER = os.getenv("APP_PROVIDER", "digitax")
+
+# ── Updated FIRS URLs per provider ───────────────────────────
+_provider = APP_PROVIDER.lower()
+
+if _provider == "digitax":
+    FIRS_BASE_URL = (
+        "https://api.digitax.tech/ng"
+        if USE_FIRS_PRODUCTION
+        else "https://api.digitax.tech/ng"
+        # DigiTax uses same base for sandbox and live
+        # The sandbox/live distinction is set by your DigiTax account type
+    )
+elif _provider == "interswitch":
+    FIRS_BASE_URL = (
+        "https://interswitchng.com/einvoice/api/v1"
+        if USE_FIRS_PRODUCTION
+        else "https://sandbox.interswitchng.com/einvoice/api/v1"
+    )
+else:
+    # firs_direct — confirmed from portal CSP headers
+    FIRS_BASE_URL = "https://api.firsmbs.com/api/v1"
+
+
+EXCEL_MAX_FILE_SIZE_MB = int(os.getenv("EXCEL_MAX_FILE_SIZE_MB", "10"))
+EXCEL_UPLOAD_DIR       = os.getenv("EXCEL_UPLOAD_DIR", "media/excel_uploads")
+APP_PROVIDER           = os.getenv("APP_PROVIDER", "digitax")
+CLOUDFLARE_ALLOWED_IPS_ONLY   = os.getenv("CLOUDFLARE_ALLOWED_IPS_ONLY", "False") == "True"
+CLOUDFLARE_BLOCK_THREAT_SCORE = int(os.getenv("CLOUDFLARE_BLOCK_THREAT_SCORE", "50"))
+
 

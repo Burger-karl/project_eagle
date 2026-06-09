@@ -35,3 +35,21 @@ class ClientCompanyAdmin(admin.ModelAdmin):
             "fields": ("created_at", "updated_at")
         }),
     )
+    fieldsets = (
+        ("Sage 300 MSSQL (Client .bak Database)", {
+            "classes": ("collapse",),
+            "fields": (
+                "sage300_mssql_server", "sage300_mssql_database",
+                "sage300_mssql_driver", "sage300_mssql_trusted",
+                "sage300_mssql_username", "sage300_mssql_password"
+            )
+        }),
+        ("Sage 300 Web API (for IRN write-back)", {
+            "classes": ("collapse",),
+            "fields": (
+                "sage300_api_server", "sage300_api_company",
+                "sage300_api_version", "sage300_api_username",
+                "sage300_api_password"
+            )
+        }),
+    )
