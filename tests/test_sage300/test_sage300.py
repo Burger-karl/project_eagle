@@ -16,6 +16,12 @@ from unittest.mock import MagicMock, patch, PropertyMock
 from decimal import Decimal
 from datetime import date, datetime
 
+# Real model import — needed so BuyerTINMapping.DoesNotExist stays a real
+# exception class. NEVER patch the whole BuyerTINMapping class (it replaces
+# .DoesNotExist with a MagicMock, breaking the except clause in field_mapper.py).
+# Only patch BuyerTINMapping.objects.get instead.
+from apps.invoices.models import BuyerTINMapping
+
 
 # ── Mock Sage 300 raw invoice (mirrors ARINVOICE + ARCUSTOMER) ─
 SAMPLE_RAW_INVOICE = {
@@ -76,6 +82,19 @@ MOCK_COMPANY.mssql_server   = "localhost"
 
 class TestSage300FieldMapper:
     """Tests for the Sage 300 → FIRS UBL field mapper."""
+
+    @pytest.fixture(autouse=True)
+    def default_no_buyer_tin(self):
+        """
+        Default every test in this class to 'no TIN mapping found' (B2C),
+        without touching a real database. Individual tests (e.g. the B2B
+        test below) override this by patching BuyerTINMapping.objects.get
+        again inside the test body.
+        """
+        with patch.object(
+            BuyerTINMapping.objects, "get", side_effect=BuyerTINMapping.DoesNotExist
+        ):
+            yield
 
     def _get_mapper(self, raw=None):
         from apps.sage300.field_mapper import Sage300FieldMapper
@@ -156,19 +175,18 @@ class TestSage300FieldMapper:
 
     def test_b2c_when_no_buyer_tin(self):
         """No TIN mapping → invoice classified as B2C."""
-        with patch("apps.sage300.field_mapper.BuyerTINMapping") as mock_model:
-            mock_model.objects.get.side_effect = Exception("DoesNotExist")
-            mapper = self._get_mapper()
-            mapped = mapper.map()
-            assert mapped["invoice_type"] == "B2C"
-            assert mapped["buyer_tin"]    == ""
+        # Covered by the autouse default_no_buyer_tin fixture already, but
+        # kept explicit for clarity/documentation of intent.
+        mapper = self._get_mapper()
+        mapped = mapper.map()
+        assert mapped["invoice_type"] == "B2C"
+        assert mapped["buyer_tin"]    == ""
 
     def test_b2b_when_buyer_tin_found(self):
         """TIN mapping found → invoice classified as B2B."""
-        with patch("apps.sage300.field_mapper.BuyerTINMapping") as mock_model:
-            mock_tin = MagicMock()
-            mock_tin.buyer_tin = "31569955-0001"
-            mock_model.objects.get.return_value = mock_tin
+        mock_tin = MagicMock()
+        mock_tin.buyer_tin = "31569955-0001"
+        with patch.object(BuyerTINMapping.objects, "get", return_value=mock_tin):
             mapper = self._get_mapper()
             mapped = mapper.map()
             assert mapped["invoice_type"] == "B2B"
@@ -241,7 +259,6 @@ class TestSage300FieldMapper:
         assert mapped["original_currency"] == "USD"
         assert mapped["exchange_rate"]     == 1580.0
 
-
 # ════════════════════════════════════════════════════════════════
 # TESTS: SAGE 300 Date Parsing
 # ════════════════════════════════════════════════════════════════
@@ -282,13 +299,18 @@ class TestSage300UBLBuilder:
     """Tests that UBLInvoiceBuilder works correctly with Sage 300 mapped data."""
 
     def _get_mapped(self, buyer_tin=""):
-        with patch("apps.sage300.field_mapper.BuyerTINMapping") as mock_model:
-            if buyer_tin:
-                mock_tin = MagicMock()
-                mock_tin.buyer_tin = buyer_tin
-                mock_model.objects.get.return_value = mock_tin
-            else:
-                mock_model.objects.get.side_effect = Exception("DoesNotExist")
+        if buyer_tin:
+            mock_tin = MagicMock()
+            mock_tin.buyer_tin = buyer_tin
+            patched_get = patch.object(
+                BuyerTINMapping.objects, "get", return_value=mock_tin
+            )
+        else:
+            patched_get = patch.object(
+                BuyerTINMapping.objects, "get",
+                side_effect=BuyerTINMapping.DoesNotExist,
+            )
+        with patched_get:
             from apps.sage300.field_mapper import Sage300FieldMapper
             return Sage300FieldMapper(MOCK_COMPANY, SAMPLE_RAW_INVOICE).map()
 
@@ -369,16 +391,18 @@ class TestSage300UBLBuilder:
 class TestSage300ODBCClientMock:
     """Tests for ODBCClient using mocked pyodbc connections."""
 
+
     def _get_client(self):
         from apps.sage300.odbc_client import Sage300ODBCClient
         company = MagicMock()
         company.name = "Test Client"
         company.mssql_database = "SAMLTD"
-        company.mssql_server   = "localhost"
+        company.mssql_server = "localhost"
         company.sage300_mssql_database = "SAMLTD"
-        company.sage300_mssql_server   = "localhost"
-        company.sage300_mssql_trusted  = True
+        company.sage300_mssql_server = "localhost"
+        company.sage300_mssql_trusted = True
         return Sage300ODBCClient(company)
+
 
     def test_connection_string_includes_database(self):
         client = self._get_client()

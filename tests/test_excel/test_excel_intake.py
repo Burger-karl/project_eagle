@@ -299,8 +299,11 @@ class TestFileValidation:
         mock_file       = MagicMock()
         mock_file.name  = "invoices.xlsx"
         mock_file.size  = 1024 * 100  # 100KB
-        # xlsx magic bytes (PK zip header)
-        mock_file.read.return_value = b"\x50\x4b\x03\x04" + b"\x00" * 100
+        # xlsx magic bytes (PK zip header). Note: MagicMock().read(4)
+        # ignores the "4" and returns the full return_value regardless
+        # of length, so this must be exactly 4 bytes to mirror what a
+        # real file.read(4) would return.
+        mock_file.read.return_value = b"\x50\x4b\x03\x04"
         is_valid, err = validate_excel_file(mock_file)
         assert is_valid is True
         assert err == ""

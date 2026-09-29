@@ -227,6 +227,10 @@ FIRS_BASE_URL = (
 FIRS_API_KEY    = os.getenv("FIRS_API_KEY", "")
 FIRS_SECRET_KEY = os.getenv("FIRS_SECRET_KEY", "")
 FIRS_TIN        = os.getenv("FIRS_TIN", "")
+FIRS_DIGITAX_PARTY_ID = os.getenv(
+    "FIRS_DIGITAX_PARTY_ID",
+    "",
+)
 
 # ── Sage 200 API Configuration ────────────────────────────────
 SAGE200_CLIENT_ID     = os.getenv("SAGE200_CLIENT_ID", "")

@@ -254,12 +254,22 @@ class ExcelParser:
         """
         Match header strings to known field names.
         Returns dict of {field_name: column_index}.
+
+        Each header column can only be claimed by ONE field. Without this,
+        a generic alias (e.g. "vat") can match an unrelated header that
+        merely contains that substring (e.g. "Unit Price (excl VAT)*"),
+        silently pointing vat_amount at the wrong column and corrupting
+        VAT/net amounts on real invoices.
         """
         col_map = {}
+        used_indices = set()
         for field, aliases in STANDARD_COLUMNS.items():
             for i, header in enumerate(headers):
+                if i in used_indices:
+                    continue
                 if any(alias in header for alias in aliases):
                     col_map[field] = i
+                    used_indices.add(i)
                     break
         logger.debug(f"[ExcelParser] Detected columns: {col_map}")
         return col_map
@@ -357,11 +367,23 @@ class ExcelParser:
     # ── HELPERS ───────────────────────────────────────────────
 
     @staticmethod
-    def _parse_date(raw: str) -> Optional[str]:
+    def _parse_date(raw) -> Optional[str]:
         """Parse date from various formats → ISO string YYYY-MM-DD."""
+        if raw is None or raw == "":
+            return None
+
+        # Handle datetime/date objects FIRST — openpyxl returns real
+        # datetime objects for date-formatted cells. Converting to a
+        # string before this check (as the old code did) destroys the
+        # type and makes every format pattern below fail.
+        if isinstance(raw, datetime):
+            return raw.date().isoformat()
+        if isinstance(raw, date):
+            return raw.isoformat()
+
+        raw = str(raw).strip()
         if not raw:
             return None
-        raw = str(raw).strip()
 
         # Already ISO format
         if len(raw) == 10 and raw[4] == "-":
@@ -387,10 +409,6 @@ class ExcelParser:
                 return datetime.strptime(raw, fmt).date().isoformat()
             except ValueError:
                 continue
-
-        # Handle datetime objects from openpyxl
-        if hasattr(raw, "date"):
-            return raw.date().isoformat()
 
         return None
 

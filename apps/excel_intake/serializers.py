@@ -41,7 +41,7 @@ class ExcelUploadDetailSerializer(serializers.ModelSerializer):
     invoices        = ExcelInvoiceSerializer(many=True, read_only=True)
 
     class Meta:
-        model  = ExcelUpload
+        model = ExcelUpload
         fields = "__all__"
 
 

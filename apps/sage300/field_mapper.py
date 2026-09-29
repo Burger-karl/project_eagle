@@ -276,7 +276,12 @@ class Sage300FieldMapper:
 
         mapped_lines = []
         for i, line in enumerate(lines, start=1):
-            vat_rate = float(line.get("vat_rate", 7.5) or 7.5)
+            # NOTE: use "is None" checks, not "or", for numeric fields —
+            # 0.0 is falsy in Python and `x or default` would silently
+            # replace a genuine zero (e.g. a zero-rated VAT line) with
+            # the default, miscategorizing it as standard-rated.
+            _raw_vat_rate = line.get("vat_rate")
+            vat_rate = float(_raw_vat_rate) if _raw_vat_rate is not None else 7.5
             qty      = float(line.get("quantity", 1)   or 1)
             price    = float(line.get("unit_price", 0) or 0)
             net      = float(line.get("line_net_amount", 0) or qty * price)

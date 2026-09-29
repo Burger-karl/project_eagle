@@ -120,7 +120,10 @@ class ExcelFieldMapper:
         return str(val)[:10]
 
     def _build_lines(self) -> list:
-        vat_rate = float(self.row.get("vat_rate", 7.5) or 7.5)
+        # is-None check, not "or" — 0.0 is falsy in Python, so "x or 7.5"
+        # would silently replace a genuine zero-rated VAT rate with 7.5.
+        _raw_vat_rate = self.row.get("vat_rate")
+        vat_rate = float(_raw_vat_rate) if _raw_vat_rate is not None else 7.5
         qty      = float(self.row.get("quantity", 1)   or 1)
         price    = float(self.row.get("unit_price", 0) or 0)
         net      = float(self.row.get("net_amount", 0) or 0)

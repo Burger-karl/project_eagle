@@ -30,6 +30,7 @@ class UploadStatus(models.TextChoices):
     FAILED     = "FAILED",     "Failed — parsing or submission error"
 
 
+
 class ExcelRowStatus(models.TextChoices):
     PENDING   = "PENDING",  "Pending"
     VALID     = "VALID",    "Valid — ready to submit"
@@ -37,6 +38,7 @@ class ExcelRowStatus(models.TextChoices):
     SUBMITTED = "SUBMITTED", "Submitted to FIRS"
     CLEARED   = "CLEARED",  "Cleared — IRN received"
     FAILED    = "FAILED",   "Failed — submission error"
+
 
 
 class ExcelUpload(TimeStampedModel):
@@ -73,12 +75,14 @@ class ExcelUpload(TimeStampedModel):
     email_subject   = models.CharField(max_length=500, blank=True)
     email_message_id = models.CharField(max_length=255, blank=True, db_index=True)
 
+
     # Parsing results
-    total_rows      = models.IntegerField(default=0, help_text="Total invoice rows found")
-    valid_rows      = models.IntegerField(default=0)
-    invalid_rows    = models.IntegerField(default=0)
-    cleared_rows    = models.IntegerField(default=0)
-    failed_rows     = models.IntegerField(default=0)
+    total_rows        = models.IntegerField(default=0, help_text="Total invoice rows found")
+    valid_rows        = models.IntegerField(default=0)
+    invalid_rows      = models.IntegerField(default=0)
+    cleared_rows      = models.IntegerField(default=0)
+    failed_rows       = models.IntegerField(default=0)
+
 
     # Error tracking
     parse_error     = models.TextField(blank=True)
@@ -88,6 +92,8 @@ class ExcelUpload(TimeStampedModel):
     # Upload metadata (Method C — web upload)
     uploaded_by_ip  = models.GenericIPAddressField(null=True, blank=True)
     uploaded_by_user = models.CharField(max_length=255, blank=True)
+
+    
 
     class Meta:
         verbose_name        = "Excel Upload"

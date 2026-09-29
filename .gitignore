@@ -23,6 +23,7 @@ lib64/
 venv/
 ENV/
 env/
+.env.example
 
 # Django
 *.log
