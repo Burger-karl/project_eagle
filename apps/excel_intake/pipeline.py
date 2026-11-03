@@ -4,7 +4,10 @@ Orchestrates the full flow: parsed Excel rows → FIRS → IRN.
 Used by all three intake methods (Folder Watch, Email, Web Upload).
 """
 
+import json
 import logging
+
+from django.core.serializers.json import DjangoJSONEncoder
 from django.utils import timezone
 
 from apps.excel_intake.models import (
@@ -102,23 +105,33 @@ class ExcelPipeline:
             f"{cleared} cleared, {failed} failed"
         )
 
-    def _process_row(self, row_data: dict) -> bool:
-        """Process one invoice row. Returns True on success."""
+    def _process_row(self, row_data: dict, existing: ExcelInvoice = None) -> bool:
+        """
+        Process one invoice row. Returns True on success.
+
+        `existing`: when retrying a failed row, pass that row so the retry updates it
+        (and counts as another attempt) instead of creating a second record. Without
+        this a retry added a duplicate row every time, and the original stayed FAILED
+        and was sent again even after a retry had cleared it.
+        """
         row_num = row_data.get("row_number", 0)
 
-        # Create invoice record
-        inv_record = ExcelInvoice.objects.create(
-            upload=self.upload,
-            row_number=row_num,
-            status=ExcelRowStatus.VALID,
-            raw_data=row_data,
-            invoice_number=row_data.get("invoice_number", ""),
-            buyer_name=row_data.get("buyer_name", ""),
-            buyer_tin=row_data.get("buyer_tin", ""),
-            net_amount=row_data.get("net_amount", 0),
-            vat_amount=row_data.get("vat_amount", 0),
-            gross_amount=row_data.get("gross_amount", 0),
-        )
+        if existing is not None:
+            inv_record = existing
+        else:
+            # Create invoice record
+            inv_record = ExcelInvoice.objects.create(
+                upload=self.upload,
+                row_number=row_num,
+                status=ExcelRowStatus.VALID,
+                raw_data=row_data,
+                invoice_number=row_data.get("invoice_number", ""),
+                buyer_name=row_data.get("buyer_name", ""),
+                buyer_tin=row_data.get("buyer_tin", ""),
+                net_amount=row_data.get("net_amount", 0),
+                vat_amount=row_data.get("vat_amount", 0),
+                gross_amount=row_data.get("gross_amount", 0),
+            )
 
         try:
             # Parse invoice date
@@ -136,7 +149,9 @@ class ExcelPipeline:
             mapper = ExcelFieldMapper(self.company, row_data)
             mapped = mapper.map()
 
-            inv_record.mapped_data = mapped
+            # The mapper returns Decimal amounts, which a JSON field cannot store. Keep
+            # the original `mapped` for the UBL builder and store a JSON-safe copy.
+            inv_record.mapped_data = json.loads(json.dumps(mapped, cls=DjangoJSONEncoder))
             inv_record.status      = ExcelRowStatus.VALID
             inv_record.save(update_fields=["mapped_data", "status"])
 

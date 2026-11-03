@@ -244,7 +244,8 @@ class EmailIngestAgent:
         from apps.excel_intake.models import (
             ExcelUpload, UploadStatus, IntakeMethod
         )
-        from apps.excel_intake.excel_parser import ExcelParser, ExcelParseError
+        from apps.excel_intake.excel_parser import ExcelParseError
+        from apps.excel_intake.parsing import get_parser
         from apps.excel_intake.pipeline import ExcelPipeline
 
         upload = ExcelUpload.objects.create(
@@ -259,7 +260,7 @@ class EmailIngestAgent:
         )
 
         try:
-            parser = ExcelParser(file_bytes=file_bytes, filename=filename)
+            parser = get_parser(file_bytes=file_bytes, filename=filename, client=self.company)
             result = parser.parse()
 
             upload.file_hash = result.file_hash

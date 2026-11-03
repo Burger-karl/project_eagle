@@ -144,7 +144,7 @@ class ExcelUploadView(APIView):
         limited = is_ratelimited(
             request,
             group="excel_upload",
-            key=f"ip:{real_ip}",
+            key=lambda group, request: real_ip,
             rate="20/h",
             increment=True,
         )

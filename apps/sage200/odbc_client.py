@@ -98,10 +98,16 @@ class Sage200ODBCClient:
     def get_new_invoices(
         self,
         since: Optional[datetime] = None,
-        limit: int = 500
+        limit: int = 500,
+        after_id: Optional[int] = None,
     ) -> List[Dict]:
         """
         Pull posted AR invoices directly from PostAR table.
+
+        Rows come back in posting order (AutoIdx, which only ever grows), so
+        `after_id` works as a bookmark: pass the highest AutoIdx already pulled
+        and you get the next `limit` rows after it. Without a bookmark the
+        oldest `limit` rows come back every time.
 
         PostAR confirmed columns:
             AutoIdx, TxDate, Id, AccountLink, TrCodeID,
@@ -117,6 +123,10 @@ class Sage200ODBCClient:
         if since:
             date_filter = "AND ar.TxDate > ?"
             params.append(since)
+
+        if after_id is not None:
+            date_filter += " AND ar.AutoIdx > ?"
+            params.append(int(after_id))
 
         sql = f"""
             SELECT TOP {limit}
@@ -148,9 +158,9 @@ class Sage200ODBCClient:
 
             FROM PostAR ar
             LEFT JOIN Client c ON ar.AccountLink = c.DCLink
-            WHERE ar.Debit > 0 OR ar.Credit > 0
+            WHERE (ar.Debit > 0 OR ar.Credit > 0)   -- brackets matter: AND binds tighter than OR
             {date_filter}
-            ORDER BY ar.TxDate ASC, ar.AutoIdx ASC
+            ORDER BY ar.AutoIdx ASC
         """
 
         invoices = []

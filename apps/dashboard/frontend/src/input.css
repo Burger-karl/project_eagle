@@ -1,0 +1,95 @@
+/* Eagle dashboard stylesheet source. Build with: npm run build (in this folder). */
+
+@font-face {
+  font-family: "Bricolage Grotesque Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url("../fonts/bricolage-grotesque-latin-wght-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Public Sans Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("../fonts/public-sans-latin-wght-normal.woff2") format("woff2");
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens (space-separated RGB) ─────────────────── */
+@layer base {
+  :root {
+    --canvas: 232 236 239;  --panel: 255 255 255;  --sunken: 243 246 248;
+    --ink: 15 31 43;        --mute: 74 91 104;     --line: 211 219 225;
+    --focus: 31 95 168;
+    --brand: 11 93 70;      --brand-hover: 10 78 59;  --brand-on: 255 255 255;
+    --side: 13 43 37;       --side-ink: 220 235 229;  --side-mute: 143 176 165;  --side-active: 23 61 52;
+
+    --pend: 122 78 0;    --pend-bg: 252 239 201;  --pend-solid: 217 162 27;
+    --sub: 27 85 155;    --sub-bg: 220 235 250;   --sub-solid: 79 143 214;
+    --clr: 10 108 75;    --clr-bg: 213 241 229;   --clr-solid: 47 165 123;
+    --wb: 255 255 255;   --wb-bg: 11 93 70;       --wb-solid: 11 93 70;
+    --fail: 165 35 27;   --fail-bg: 251 218 214;  --fail-solid: 208 70 60;
+    --rej: 127 39 97;    --rej-bg: 243 218 234;   --rej-solid: 168 67 138;
+    --can: 74 87 96;     --can-bg: 226 231 234;   --can-solid: 154 167 176;
+  }
+  .dark {
+    --canvas: 11 22 29;     --panel: 19 36 48;     --sunken: 15 29 39;
+    --ink: 231 239 243;     --mute: 157 177 190;   --line: 36 58 72;
+    --focus: 125 182 242;
+    --brand: 60 185 143;    --brand-hover: 86 205 163;  --brand-on: 6 35 25;
+    --side: 8 28 24;        --side-ink: 214 232 225;    --side-mute: 127 163 150;  --side-active: 18 53 44;
+
+    --pend: 240 194 90;  --pend-bg: 58 45 11;     --pend-solid: 217 162 27;
+    --sub: 141 188 242;  --sub-bg: 19 46 77;      --sub-solid: 79 143 214;
+    --clr: 111 221 178;  --clr-bg: 15 58 44;      --clr-solid: 47 165 123;
+    --wb: 6 35 25;       --wb-bg: 60 185 143;     --wb-solid: 60 185 143;
+    --fail: 255 157 148; --fail-bg: 74 22 19;     --fail-solid: 224 87 77;
+    --rej: 232 166 210;  --rej-bg: 63 22 51;      --rej-solid: 185 90 157;
+    --can: 169 183 192;  --can-bg: 34 52 63;      --can-solid: 110 127 138;
+  }
+  html { color-scheme: light; }
+  html.dark { color-scheme: dark; }
+  :focus-visible { outline: 2px solid rgb(var(--focus)); outline-offset: 2px; border-radius: 4px; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+}
+
+/* ── Reusable pieces (used many times by dashboard.js) ───── */
+@layer components {
+  .panel { @apply min-w-0 rounded-xl border border-line bg-panel; }
+  .panel-head { @apply flex items-baseline justify-between gap-3 px-[18px] pb-1.5 pt-4; }
+  .panel-title { @apply font-display text-[17px] font-bold leading-tight tracking-tight; }
+
+  .btn { @apply inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-brand px-3.5 py-2 text-sm font-semibold text-brand-on transition-colors hover:bg-brand-hover disabled:opacity-50 disabled:hover:bg-brand; }
+  .btn-ghost { @apply border border-line bg-transparent text-ink hover:bg-sunken disabled:hover:bg-transparent; }
+  .btn-sm { @apply px-2.5 py-1 text-[13px]; }
+  .btn svg { @apply h-4 w-4 flex-none fill-none stroke-current stroke-2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .linkbtn { @apply text-[13.5px] font-semibold text-brand underline underline-offset-[3px] hover:brightness-110; }
+  .rowlink { @apply text-left font-semibold underline decoration-transparent underline-offset-[3px] hover:decoration-current; }
+
+  .label { @apply mb-1 block text-[13px] font-medium text-mute; }
+  .input { @apply h-[38px] w-full min-w-0 rounded-lg border border-line bg-panel px-2.5 py-2 text-sm text-ink placeholder:text-mute/70; }
+
+  .chip { @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-full py-0.5 pl-2 pr-2.5 text-xs font-semibold; }
+  .chip::before { content: ""; @apply h-1.5 w-1.5 rounded-full bg-current; }
+
+  .th { @apply whitespace-nowrap border-b border-line bg-panel px-3.5 py-2.5 text-left text-[13px] font-semibold text-mute; }
+  .td { @apply border-b border-line px-3.5 py-3 align-middle; }
+  tbody tr:last-child .td { @apply border-b-0; }
+
+  .nav-link { @apply flex items-center gap-3 whitespace-nowrap rounded-lg px-2.5 py-2 font-medium text-side-ink hover:bg-side-active aria-[current=page]:bg-side-active aria-[current=page]:shadow-[inset_3px_0_0_rgb(var(--brand))]; }
+  .nav-link svg { @apply h-[18px] w-[18px] flex-none fill-none stroke-current stroke-[1.7]; stroke-linecap: round; stroke-linejoin: round; }
+  .nav-link:focus-visible { outline-color: #fff; outline-offset: -2px; }
+
+  /* The pipeline: a dot per stage joined by a dashed line. --tone / --tone-bg are set per stage. */
+  .stage { @apply relative block rounded-lg pb-3 pr-4 pt-9 text-left; }
+  .stage::before { content: ""; @apply absolute left-0 top-2.5 h-3.5 w-3.5 rounded-full; background: rgb(var(--tone)); box-shadow: 0 0 0 4px rgb(var(--tone-bg)); }
+  .stage::after { content: ""; @apply absolute left-6 right-2 top-4 h-0.5; background: repeating-linear-gradient(90deg, rgb(var(--line)) 0 6px, transparent 6px 10px); }
+  .stage:last-child::after { display: none; }
+  @media (max-width: 1023px) { .stage:nth-child(2n)::after { display: none; } }
+}

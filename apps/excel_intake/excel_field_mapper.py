@@ -119,11 +119,41 @@ class ExcelFieldMapper:
             )
         return str(val)[:10]
 
+    def _lines_from_sheet(self, parsed: list, vat_rate: float) -> list:
+        """
+        One e-invoice line per item, for files that carry their own line items
+        (Link Options print-style sheets). Quantity x price always equals the line
+        amount, and the lines' VAT adds up exactly to the invoice VAT: the last line
+        takes whatever rounding is left over.
+        """
+        total_vat = round(float(self.row.get("vat_amount", 0) or 0), 2)
+        lines, allocated = [], 0.0
+        for i, line in enumerate(parsed, start=1):
+            qty = float(line.get("quantity") or 1) or 1.0
+            net = round(float(line.get("line_net_amount") or 0), 2)
+            vat = round(total_vat - allocated, 2) if i == len(parsed) else round(net * vat_rate / 100, 2)
+            allocated += vat
+            lines.append({
+                "line_number":     str(i),
+                "description":     str(line.get("description") or "Services").strip(),
+                "quantity":        qty,
+                "unit_code":       line.get("unit_code", "EA"),
+                "unit_price":      round(net / qty, 4),
+                "line_net_amount": net,
+                "vat_rate":        vat_rate,
+                "vat_amount":      vat,
+                "tax_category":    "S" if vat_rate > 0 else "Z",
+                "tax_scheme":      "VAT",
+            })
+        return lines
+
     def _build_lines(self) -> list:
         # is-None check, not "or" — 0.0 is falsy in Python, so "x or 7.5"
         # would silently replace a genuine zero-rated VAT rate with 7.5.
         _raw_vat_rate = self.row.get("vat_rate")
         vat_rate = float(_raw_vat_rate) if _raw_vat_rate is not None else 7.5
+        if self.row.get("lines"):
+            return self._lines_from_sheet(self.row["lines"], vat_rate)
         qty      = float(self.row.get("quantity", 1)   or 1)
         price    = float(self.row.get("unit_price", 0) or 0)
         net      = float(self.row.get("net_amount", 0) or 0)

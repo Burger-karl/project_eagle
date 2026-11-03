@@ -24,7 +24,8 @@ def process_excel_upload(self, upload_id: str, file_bytes_hex: str = None):
     Called by Method C (Web Upload) after file is received.
     """
     from apps.excel_intake.models import ExcelUpload, UploadStatus
-    from apps.excel_intake.excel_parser import ExcelParser, ExcelParseError
+    from apps.excel_intake.excel_parser import ExcelParseError
+    from apps.excel_intake.parsing import get_parser
     from apps.excel_intake.pipeline import ExcelPipeline
 
     try:
@@ -48,9 +49,10 @@ def process_excel_upload(self, upload_id: str, file_bytes_hex: str = None):
             raise ValueError("No file data available")
 
         # Parse
-        parser = ExcelParser(
+        parser = get_parser(
             file_bytes=file_bytes,
-            filename=upload.original_filename
+            filename=upload.original_filename,
+            client=upload.client,
         )
         result = parser.parse()
 
@@ -193,7 +195,7 @@ def retry_failed_excel_rows():
             if not row.mapped_data:
                 continue
             pipeline = ExcelPipeline(row.upload, None)
-            success  = pipeline._process_row(row.raw_data)
+            success  = pipeline._process_row(row.raw_data, existing=row)
             if success:
                 retried += 1
         except Exception as e:

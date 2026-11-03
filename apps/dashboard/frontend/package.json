@@ -1,0 +1,12 @@
+{
+  "name": "eagle-dashboard-frontend",
+  "private": true,
+  "description": "Builds the Tailwind stylesheet used by the Eagle dashboard. Node is only needed if you change the design.",
+  "scripts": {
+    "build": "tailwindcss -c tailwind.config.js -i src/input.css -o ../static/dashboard/css/dashboard.css --minify",
+    "watch": "tailwindcss -c tailwind.config.js -i src/input.css -o ../static/dashboard/css/dashboard.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

@@ -140,7 +140,8 @@ class FolderWatchAgent:
 
         from django.utils import timezone
         from apps.excel_intake.models import ExcelUpload, UploadStatus, IntakeMethod
-        from apps.excel_intake.excel_parser import ExcelParser, ExcelParseError
+        from apps.excel_intake.excel_parser import ExcelParseError
+        from apps.excel_intake.parsing import get_parser
         from apps.excel_intake.pipeline import ExcelPipeline
 
         upload = None
@@ -159,7 +160,7 @@ class FolderWatchAgent:
             )
 
             # Check for duplicate
-            parser = ExcelParser(file_bytes=file_bytes, filename=path.name)
+            parser = get_parser(file_bytes=file_bytes, filename=path.name, client=self.company)
             result = parser.parse()
 
             upload.file_hash = result.file_hash

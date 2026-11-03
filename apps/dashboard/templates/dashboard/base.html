@@ -1,0 +1,17 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Eagle{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B5D46'/%3E%3Cpath d='M6 24c4-1 7-6 10-15 3 9 6 14 10 15M12 19h8' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  {# Both files are served from this site, which the Content-Security-Policy allows. #}
+  <script src="{% static 'dashboard/js/theme.js' %}"></script>
+  <link rel="stylesheet" href="{% static 'dashboard/css/dashboard.css' %}">
+</head>
+<body class="bg-canvas font-sans text-[15px] leading-normal text-ink antialiased">
+  <a href="#content" class="sr-only rounded-lg bg-panel px-3 py-2 focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-[100]">Skip to content</a>
+  {% block body %}{% endblock %}
+  {% block scripts %}{% endblock %}
+</body>
+</html>

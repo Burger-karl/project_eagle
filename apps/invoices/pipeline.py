@@ -61,7 +61,12 @@ class InvoicePipeline:
     # MAIN ENTRY POINT
     # ──────────────────────────────────────────────────────────
 
-    def run(self, since: Optional[datetime] = None) -> Dict:
+    def run(
+        self,
+        since: Optional[datetime] = None,
+        limit: Optional[int] = None,
+        after_id: Optional[int] = None,
+    ) -> Dict:
         """
         Full pipeline run for this client:
             1. Pull new invoices from Sage 200
@@ -71,6 +76,12 @@ class InvoicePipeline:
         Args:
             since: Only process invoices posted after this datetime.
                    If None, processes all pending invoices.
+            limit: Most rows to read from Sage 200 in this run (default 500).
+            after_id: Bookmark. Only read Sage rows with AutoIdx above this.
+
+        After the run, `self.errors` lists invoices that could not be saved
+        (for example the mapper rejected them) and `self.last_record_id` is the
+        highest Sage AutoIdx that was read, to use as the next bookmark.
 
         Returns:
             {
@@ -87,11 +98,17 @@ class InvoicePipeline:
         )
 
         results = {"pulled": 0, "submitted": 0, "cleared": 0, "failed": 0, "skipped": 0}
+        self.errors = []
+        self.last_record_id = None
 
         # Step 1: Pull raw invoices from Sage 200 via ODBC
         try:
-            raw_invoices = self.odbc.get_new_invoices(since=since)
+            raw_invoices = self.odbc.get_new_invoices(
+                since=since, limit=limit or 500, after_id=after_id
+            )
             results["pulled"] = len(raw_invoices)
+            ids = [int(r["invoice_id"]) for r in raw_invoices if str(r.get("invoice_id", "")).isdigit()]
+            self.last_record_id = max(ids) if ids else None
             logger.info(f"[Pipeline] Pulled {len(raw_invoices)} invoices from Sage 200")
         except Sage200ConnectionError as e:
             logger.error(f"[Pipeline] Cannot connect to Sage 200: {e}")
@@ -183,13 +200,22 @@ class InvoicePipeline:
             logger.error(f"[Pipeline] Mapping error for {invoice_num}: {e}")
             if invoice:
                 self._mark_failed(invoice, "MAPPING_ERROR", str(e))
+            else:  # nothing was saved, so remember it or it would be lost
+                self._remember_error(invoice_num, sage_id, e)
             return "failed"
 
         except Exception as e:
             logger.exception(f"[Pipeline] Unexpected error for {invoice_num}: {e}")
             if invoice:
                 self._mark_failed(invoice, "UNKNOWN_ERROR", str(e))
+            else:
+                self._remember_error(invoice_num, sage_id, e)
             return "failed"
+
+    def _remember_error(self, invoice_num, sage_id, error) -> None:
+        if not hasattr(self, "errors"):
+            self.errors = []
+        self.errors.append({"number": str(invoice_num), "sage_id": sage_id, "reason": str(error)[:300]})
 
     # ──────────────────────────────────────────────────────────
     # SUCCESS HANDLER
@@ -266,14 +292,24 @@ class InvoicePipeline:
 
         self._mark_failed(invoice, code, msg)
 
-        # Schedule retry with exponential back-off
-        from apps.invoices.tasks import retry_single_invoice
-        attempts = invoice.submission_attempts
-        delay_seconds = min(300 * (2 ** (attempts - 1)), 3600)  # max 1 hour
-        retry_single_invoice.apply_async(
-            args=[str(invoice.id)],
-            countdown=delay_seconds
-        )
+        # Schedule retry with exponential back-off. The invoice is already saved as
+        # FAILED with FIRS's real error, so if the broker (Redis) is down we must not
+        # let that exception reach _process_single, which would overwrite the real
+        # error with a connection error.
+        if getattr(self, "schedule_retries", True):
+            from apps.invoices.tasks import retry_single_invoice
+            attempts = invoice.submission_attempts
+            delay_seconds = min(300 * (2 ** (attempts - 1)), 3600)  # max 1 hour
+            try:
+                retry_single_invoice.apply_async(
+                    args=[str(invoice.id)],
+                    countdown=delay_seconds
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[Pipeline] Could not schedule a retry for {invoice.sage_invoice_number}: {exc}. "
+                    "It stays FAILED; retry it from the dashboard."
+                )
 
         return "failed"
 
