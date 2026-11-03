@@ -216,6 +216,11 @@ CELERY_BEAT_SCHEDULE = {
         "task":     "apps.excel_intake.tasks.retry_failed_excel_rows",
         "schedule": 1800,
     },
+    # Pull Created → Validated → Signed → Transmitted status from the APP
+    "sync-provider-statuses": {
+        "task":     "apps.invoices.tasks.sync_provider_statuses",
+        "schedule": 600,
+    },
 }
 
 # ── FIRS Configuration ────────────────────────────────────────
@@ -348,6 +353,32 @@ else:
     # firs_direct — confirmed from portal CSP headers
     FIRS_BASE_URL = "https://api.firsmbs.com/api/v1"
 
+
+# ── Access Point Provider adapters (apps/firs/providers/) ─────
+# Global default; a ClientCompany.app_provider value overrides it per client.
+
+# DigiTax
+DIGITAX_BASE_URL = os.getenv("DIGITAX_BASE_URL", "https://api.digitax.tech/ng/v1")
+DIGITAX_API_KEY  = os.getenv("DIGITAX_API_KEY", "")          # falls back to FIRS_API_KEY
+# Permanent item registered on the DigiTax account (item_code must be unique,
+# so items are reused rather than created per invoice).
+DIGITAX_ITEM_ID  = os.getenv("DIGITAX_ITEM_ID", "item_01M35FEGT4SFJ4GKVN7PTXPN9A")
+DIGITAX_ITEM_IDS = {
+    "STANDARD_VAT":   os.getenv("DIGITAX_ITEM_ID_STANDARD", ""),
+    "ZERO_RATED_VAT": os.getenv("DIGITAX_ITEM_ID_ZERO_RATED", ""),
+    "VAT_EXEMPT":     os.getenv("DIGITAX_ITEM_ID_EXEMPT", ""),
+}
+
+# Interswitch — fill these from the Interswitch sandbox onboarding pack
+INTERSWITCH_BASE_URL      = os.getenv("INTERSWITCH_BASE_URL", "")
+INTERSWITCH_TOKEN_URL     = os.getenv("INTERSWITCH_TOKEN_URL", "")
+INTERSWITCH_SCOPE         = os.getenv("INTERSWITCH_SCOPE", "profile")
+INTERSWITCH_CLIENT_ID     = os.getenv("INTERSWITCH_CLIENT_ID", "")
+INTERSWITCH_CLIENT_SECRET = os.getenv("INTERSWITCH_CLIENT_SECRET", "")
+INTERSWITCH_SUBMIT_PATH_B2B = os.getenv("INTERSWITCH_SUBMIT_PATH_B2B", "")
+INTERSWITCH_SUBMIT_PATH_B2C = os.getenv("INTERSWITCH_SUBMIT_PATH_B2C", "")
+INTERSWITCH_STATUS_PATH     = os.getenv("INTERSWITCH_STATUS_PATH", "")   # e.g. /invoices/{id}
+INTERSWITCH_TIN_PATH        = os.getenv("INTERSWITCH_TIN_PATH", "")      # e.g. /taxpayers/{tin}/validate
 
 EXCEL_MAX_FILE_SIZE_MB = int(os.getenv("EXCEL_MAX_FILE_SIZE_MB", "10"))
 EXCEL_UPLOAD_DIR       = os.getenv("EXCEL_UPLOAD_DIR", "media/excel_uploads")

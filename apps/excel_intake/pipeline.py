@@ -14,9 +14,7 @@ from apps.excel_intake.models import (
     ExcelUpload, ExcelInvoice, UploadStatus, ExcelRowStatus
 )
 from apps.excel_intake.excel_field_mapper import ExcelFieldMapper, MappingError
-from apps.firs.client import FIRSClient
-from apps.firs.invoice_schema import UBLInvoiceBuilder
-from apps.invoices.models import InvoiceType
+from apps.firs.providers import get_provider
 
 logger = logging.getLogger("apps.excel_intake")
 
@@ -35,10 +33,14 @@ class ExcelPipeline:
         self.result      = parse_result
         self.company     = upload.client
         self.dry_run     = dry_run
-        self.firs        = FIRSClient(
-            api_key=self.company.firs_api_key or None,
-            secret_key=self.company.firs_secret_key or None,
-        )
+        self._provider   = None
+
+    @property
+    def provider(self):
+        """Access Point Provider adapter (DigiTax, Interswitch, ...) for this client."""
+        if self._provider is None:
+            self._provider = get_provider(self.company)
+        return self._provider
 
     def run(self):
         """Run full pipeline for all valid rows in the parsed Excel file."""
@@ -162,45 +164,35 @@ class ExcelPipeline:
                 )
                 return True
 
-            # Build UBL payload
-            builder = UBLInvoiceBuilder(mapped)
-            payload = (
-                builder.build_b2c()
-                if mapped.get("invoice_type") == InvoiceType.B2C
-                else builder.build_b2b()
-            )
-
-            # Submit to FIRS via DigiTax
+            # Submit via the configured Access Point Provider
             inv_record.status = ExcelRowStatus.SUBMITTED
             inv_record.submission_attempts += 1
-            inv_record.save(update_fields=["status", "submission_attempts"])
+            inv_record.app_provider = self.provider.name
+            inv_record.save(update_fields=["status", "submission_attempts", "app_provider"])
 
-            if mapped.get("invoice_type") == InvoiceType.B2C:
-                result = self.firs.report_b2c_invoice(payload)
-            else:
-                result = self.firs.submit_b2b_invoice(payload)
+            submission = self.provider.submit(mapped)
 
-            if result["success"]:
-                data = result.get("data", {})
-                irn  = data.get("irn") or data.get("IRN", "")
-                csid = data.get("csid") or data.get("CSID", "")
-                qr   = data.get("qrCode") or data.get("qr_code", "")
-
+            if submission.success and submission.irn:
                 inv_record.status     = ExcelRowStatus.CLEARED
-                inv_record.irn        = irn
-                inv_record.csid       = csid
-                inv_record.qr_code    = qr
+                inv_record.irn        = submission.irn
+                inv_record.csid       = submission.csid
+                inv_record.qr_code    = submission.qr_code
                 inv_record.cleared_at = timezone.now()
+                inv_record.provider_invoice_id = submission.provider_invoice_id
+                inv_record.provider_status     = submission.provider_status
+                inv_record.provider_status_checked_at = timezone.now()
                 inv_record.save(update_fields=[
-                    "status", "irn", "csid", "qr_code", "cleared_at"
+                    "status", "irn", "csid", "qr_code", "cleared_at",
+                    "provider_invoice_id", "provider_status", "provider_status_checked_at",
                 ])
+                irn = submission.irn
 
                 logger.info(
                     f"[ExcelPipeline] Row {row_num} cleared: IRN={irn}"
                 )
                 return True
             else:
-                error = result.get("error", "Unknown error")
+                error = submission.error or "APP response contained no IRN"
                 inv_record.status        = ExcelRowStatus.FAILED
                 inv_record.error_message = str(error)[:1000]
                 inv_record.save(update_fields=["status", "error_message"])

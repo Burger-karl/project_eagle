@@ -83,6 +83,12 @@ class Invoice(TimeStampedModel):
     cleared_at      = models.DateTimeField(null=True, blank=True, help_text="When FIRS cleared the invoice")
     written_back_at = models.DateTimeField(null=True, blank=True, help_text="When IRN was written back to Sage 200")
 
+    # ── Access Point Provider tracking ────────────────────────
+    app_provider        = models.CharField(max_length=30, blank=True, help_text="APP used e.g. digitax / interswitch")
+    provider_invoice_id = models.CharField(max_length=100, blank=True, db_index=True, help_text="Invoice ID on the APP's system")
+    provider_status     = models.CharField(max_length=20, blank=True, db_index=True, help_text="CREATED / VALIDATED / SIGNED / TRANSMITTED / FAILED")
+    provider_status_checked_at = models.DateTimeField(null=True, blank=True)
+
     # ── Error Tracking ────────────────────────────────────────
     error_code      = models.CharField(max_length=50, blank=True)
     error_message   = models.TextField(blank=True)

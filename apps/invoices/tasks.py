@@ -130,22 +130,27 @@ def submit_single_invoice(self, invoice_id: str):
         logger.error(f"[Task] Invoice {invoice_id} not found")
         return {"error": "invoice_not_found"}
 
-    if invoice.status == InvoiceStatus.CLEARED:
+    if invoice.status in (InvoiceStatus.CLEARED, InvoiceStatus.WRITTEN_BACK) or invoice.irn:
         logger.info(f"[Task] Invoice {invoice.sage_invoice_number} already cleared — skipping")
         return {"status": "already_cleared", "irn": invoice.irn}
 
     logger.info(f"[Task] Manually submitting invoice {invoice.sage_invoice_number}")
 
     try:
-        # Re-pull the raw data from Sage 200
-        pipeline = InvoicePipeline(invoice.client)
+        # Re-pull the raw data from the source ERP the invoice came from
+        if invoice.source_system == "SAGE300":
+            from apps.sage300.pipeline import Sage300Pipeline
+            pipeline = Sage300Pipeline(invoice.client)
+        else:
+            pipeline = InvoicePipeline(invoice.client)
         raw = pipeline.odbc.get_invoice_by_id(invoice.sage_invoice_id)
 
         if not raw:
-            logger.error(f"[Task] Invoice {invoice.sage_invoice_number} not found in Sage 200")
+            logger.error(f"[Task] Invoice {invoice.sage_invoice_number} not found in {invoice.source_system}")
             return {"error": "not_found_in_sage"}
 
-        outcome = pipeline._process_single(raw)
+        # Pass the existing record so the pipeline re-submits instead of skipping it
+        outcome = pipeline._process_single(raw, existing=invoice)
         return {"outcome": outcome, "invoice": invoice.sage_invoice_number}
 
     except Exception as e:
@@ -281,6 +286,77 @@ def write_irn_to_sage(self, invoice_id: str):
             f"[Task] IRN write-back failed for {invoice.sage_invoice_number}: {e}"
         )
         raise self.retry(exc=e)
+
+
+# ──────────────────────────────────────────────────────────────
+# APP STATUS SYNC — Created → Validated → Signed → Transmitted
+# ──────────────────────────────────────────────────────────────
+
+@shared_task(
+    name="apps.invoices.tasks.sync_provider_statuses",
+    soft_time_limit=240,
+    time_limit=300,
+)
+def sync_provider_statuses(limit: int = 200):
+    """
+    Poll the Access Point Provider for invoices that have an IRN but have not
+    yet reached a terminal status (TRANSMITTED / FAILED), and store the latest
+    status. Covers Sage 200, Sage 300 (Invoice) and Excel (ExcelInvoice) rows.
+
+    Note: B2C invoices normally stop at SIGNED (nothing to transmit to a buyer);
+    they are still polled until they age out of `limit`/ordering.
+    """
+    from apps.core.models import ClientCompany
+    from apps.excel_intake.models import ExcelInvoice
+    from apps.firs.providers import get_provider, ProviderStatus
+    from apps.invoices.models import Invoice
+
+    updated = 0
+    errors  = 0
+    terminal = list(ProviderStatus.TERMINAL)
+
+    querysets = [
+        Invoice.objects.exclude(provider_invoice_id="")
+               .exclude(provider_status__in=terminal)
+               .select_related("client")
+               .order_by("provider_status_checked_at")[:limit],
+        ExcelInvoice.objects.exclude(provider_invoice_id="")
+               .exclude(provider_status__in=terminal)
+               .select_related("upload__client")
+               .order_by("provider_status_checked_at")[:limit],
+    ]
+
+    providers = {}
+    for qs in querysets:
+        for record in qs:
+            company = getattr(record, "client", None) or record.upload.client
+            key = (company.id, record.app_provider)
+            try:
+                if key not in providers:
+                    providers[key] = get_provider(company, name=record.app_provider or None)
+                result = providers[key].get_status(record.provider_invoice_id)
+            except Exception as exc:  # noqa: BLE001
+                errors += 1
+                logger.error(f"[Task] Status sync failed for {record.pk}: {exc}")
+                continue
+
+            if not result.success:
+                errors += 1
+                continue
+
+            record.provider_status = result.provider_status
+            record.provider_status_checked_at = timezone.now()
+            fields = ["provider_status", "provider_status_checked_at"]
+            if result.irn and not record.irn:
+                record.irn = result.irn
+                fields.append("irn")
+            if result.qr_code and not record.qr_code:
+                record.qr_code = result.qr_code
+                fields.append("qr_code")
+            record.save(update_fields=fields)
+            updated += 1
+
+    return {"updated": updated, "errors": errors}
 
 
 # ──────────────────────────────────────────────────────────────

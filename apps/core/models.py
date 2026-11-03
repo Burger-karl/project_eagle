@@ -42,6 +42,14 @@ class ClientCompany(TimeStampedModel):
     firs_api_key    = models.CharField(max_length=255, blank=True)
     firs_secret_key = models.CharField(max_length=255, blank=True)
 
+    # Access Point Provider for THIS client. Blank = use settings.APP_PROVIDER.
+    # With DigiTax: firs_api_key = DigiTax API key.
+    # With Interswitch: firs_api_key = client_id, firs_secret_key = client_secret.
+    app_provider    = models.CharField(
+        max_length=30, blank=True, default="",
+        help_text="APP for this client e.g. 'digitax' or 'interswitch'. Blank = global APP_PROVIDER.",
+    )
+
     # Sage 200 API credentials (for IRN write-back)
     sage_client_id     = models.CharField(max_length=255, blank=True)
     sage_client_secret = models.CharField(max_length=255, blank=True)

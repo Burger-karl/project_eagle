@@ -36,7 +36,6 @@ from apps.invoices.tasks import (
     retry_single_invoice,
     poll_sage200_invoices,
 )
-from apps.firs.client import FIRSClient
 from apps.sage200.odbc_client import Sage200ODBCClient
 from apps.core.models import ClientCompany
 
@@ -65,6 +64,7 @@ class HealthCheckView(APIView):
         }
 
         # Test Sage 200 ODBC
+        company = None
         try:
             company = ClientCompany.objects.filter(is_active=True).first()
             if company:
@@ -78,22 +78,22 @@ class HealthCheckView(APIView):
 
         # Test FIRS API
         try:
-            firs = FIRSClient()
-            result = firs.health_check()
-            health["firs_api"] = "ok" if result["success"] else f"failed: {result.get('error', '')}"
+            from apps.firs.providers import get_provider
+            result = get_provider(company).health_check()
+            health["app_provider"] = result.get("provider", "")
+            health["firs_api"] = "ok" if result["success"] else f"failed: {result.get('detail', '')}"
         except Exception as e:
             health["firs_api"] = f"error: {str(e)[:100]}"
 
         # Test Redis
         try:
-            from django_redis import get_redis_connection
-            conn = get_redis_connection("default")
-            conn.ping()
+            import redis
+            redis.Redis.from_url(settings.CELERY_BROKER_URL, socket_connect_timeout=2).ping()
             health["redis"] = "ok"
         except Exception:
             health["redis"] = "unavailable"
 
-        overall = all(v == "ok" for k, v in health.items() if k not in ("environment", "firs_url", "sage200_db"))
+        overall = all(v == "ok" for k, v in health.items() if k not in ("environment", "firs_url", "sage200_db", "app_provider"))
         status_code = 200 if overall else 503
 
         return Response(health, status=status_code)
@@ -230,8 +230,9 @@ class ValidateTINView(APIView):
         if not tin:
             return Response({"error": "tin query parameter is required"}, status=400)
 
-        firs = FIRSClient()
-        result = firs.validate_tin(tin)
+        from apps.firs.providers import get_provider
+        company = ClientCompany.objects.filter(is_active=True).first()
+        result = get_provider(company).validate_tin(tin)
         return Response(result)
 
 
@@ -260,9 +261,10 @@ class BuyerTINMappingListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         mapping = serializer.save()
         # Validate the TIN against FIRS immediately
-        firs = FIRSClient()
-        result = firs.validate_tin(mapping.buyer_tin)
-        if result["success"]:
+        from apps.firs.providers import get_provider
+        result = get_provider(mapping.client).validate_tin(mapping.buyer_tin)
+        # Only mark validated when the APP actually supports TIN validation
+        if result.get("success") and result.get("supported", True):
             from django.utils import timezone
             mapping.is_validated = True
             mapping.validated_at = timezone.now()
