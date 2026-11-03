@@ -73,7 +73,7 @@ def test_never_prints_the_database_password(company):
 def test_saves_nothing_and_never_calls_firs(company):
     with patch(f"{CMD}.Sage200ODBCClient") as client, \
          patch("apps.firs.client.FIRSClient") as firs, \
-         patch("apps.invoices.pipeline.FIRSClient") as pipeline_firs:
+         patch("apps.invoices.pipeline.get_provider") as pipeline_firs:
         client.return_value.get_new_invoices.return_value = [sage_row(i) for i in range(1, 6)]
         run()
     assert Invoice.objects.count() == 0

@@ -361,22 +361,19 @@ class TestExcelPipelineMock:
         upload.invoices.filter.return_value.values_list.return_value = ["IRN-TEST-001"]
         return upload
 
-    @patch("apps.excel_intake.pipeline.FIRSClient")
+    @patch("apps.excel_intake.pipeline.get_provider")
     @patch("apps.excel_intake.pipeline.ExcelInvoice")
-    def test_pipeline_calls_firs_submit(self, mock_inv, mock_firs_cls, mock_upload):
+    def test_pipeline_calls_firs_submit(self, mock_inv, mock_get_provider, mock_upload):
         from apps.excel_intake.pipeline import ExcelPipeline
         from apps.excel_intake.excel_parser import ParseResult
+        from apps.firs.providers import SubmissionResult
 
         mock_firs = MagicMock()
-        mock_firs.submit_b2b_invoice.return_value = {
-            "success": True,
-            "data":    {"irn": "IRN-TEST-001", "csid": "CSID-001"}
-        }
-        mock_firs.report_b2c_invoice.return_value = {
-            "success": True,
-            "data":    {"irn": "IRN-TEST-002", "qr_code": "QR-001"}
-        }
-        mock_firs_cls.return_value = mock_firs
+        mock_firs.name = "digitax"
+        mock_firs.submit.return_value = SubmissionResult(
+            success=True, provider="digitax", irn="IRN-TEST-001", csid="CSID-001",
+        )
+        mock_get_provider.return_value = mock_firs
 
         mock_inv_obj = MagicMock()
         mock_inv.objects.create.return_value = mock_inv_obj
@@ -409,9 +406,5 @@ class TestExcelPipelineMock:
         pipeline = ExcelPipeline(mock_upload, result)
         pipeline.run()
 
-        # Verify FIRS was called
-        called = (
-            mock_firs.submit_b2b_invoice.called or
-            mock_firs.report_b2c_invoice.called
-        )
-        assert called, "FIRS submission was not called"
+        # Verify the Access Point Provider was called
+        assert mock_firs.submit.called, "APP submission was not called"

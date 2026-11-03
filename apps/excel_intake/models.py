@@ -167,6 +167,12 @@ class ExcelInvoice(TimeStampedModel):
     qr_code         = models.TextField(blank=True)
     cleared_at      = models.DateTimeField(null=True, blank=True)
 
+    # Access Point Provider tracking
+    app_provider        = models.CharField(max_length=30, blank=True)
+    provider_invoice_id = models.CharField(max_length=100, blank=True, db_index=True)
+    provider_status     = models.CharField(max_length=20, blank=True, db_index=True)
+    provider_status_checked_at = models.DateTimeField(null=True, blank=True)
+
     # Error tracking
     validation_errors = models.JSONField(default=list)
     error_message     = models.TextField(blank=True)

@@ -133,18 +133,25 @@ def run_link_options_file(
             )
         else:
             try:
-                from apps.firs.client import FIRSClient
-                firs = FIRSClient(
-                    api_key=getattr(company, "firs_api_key", None),
-                    secret_key=getattr(company, "firs_secret_key", None),
-                )
-                response = firs.submit_invoice(payload)
-                result["irn"]    = response.get("irn") or response.get("IRN")
-                result["status"] = "submitted"
-                logger.info(
-                    f"[LOPipeline] Invoice {inv_num} submitted — "
-                    f"IRN: {result['irn']}"
-                )
+                from apps.firs.providers import get_provider
+                provider   = get_provider(company)
+                submission = provider.submit(mapped)
+                result["provider"]            = provider.name
+                result["provider_payload"]    = submission.payload
+                result["provider_invoice_id"] = submission.provider_invoice_id
+                result["provider_status"]     = submission.provider_status
+                if submission.success and submission.irn:
+                    result["irn"]     = submission.irn
+                    result["qr_code"] = submission.qr_code
+                    result["status"]  = "submitted"
+                    logger.info(
+                        f"[LOPipeline] Invoice {inv_num} submitted via {provider.name} — "
+                        f"IRN: {result['irn']}"
+                    )
+                else:
+                    result["status"] = "error"
+                    result["error"]  = f"{provider.name} rejected: {submission.error or 'no IRN returned'}"
+                    logger.error(f"[LOPipeline] Invoice {inv_num}: {result['error']}")
             except Exception as e:
                 result["status"] = "error"
                 result["error"]  = f"FIRS submission failed: {e}"

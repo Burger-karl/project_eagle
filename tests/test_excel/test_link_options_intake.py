@@ -13,6 +13,7 @@ from apps.excel_intake.parsing import LinkOptionsFileParser, get_parser, normali
 from apps.excel_intake.pipeline import ExcelPipeline
 from apps.invoices.models import BuyerTINMapping
 from tests.test_excel.lo_fixture import workbook
+from tests.fake_app import patch_provider
 
 pytestmark = pytest.mark.django_db
 PIPE = "apps.excel_intake.pipeline"
@@ -35,7 +36,7 @@ def firs():
     ok = {"success": True, "data": {"irn": "IRN-OK", "csid": "CSID", "qrCode": ""}}
     client.submit_b2b_invoice.return_value = ok
     client.report_b2c_invoice.return_value = ok
-    with patch(f"{PIPE}.FIRSClient", return_value=client):
+    with patch_provider(PIPE, client):
         yield client
 
 

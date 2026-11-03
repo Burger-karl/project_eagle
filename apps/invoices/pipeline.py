@@ -27,8 +27,7 @@ from apps.core.models import ClientCompany
 from apps.sage200.odbc_client import Sage200ODBCClient, Sage200ConnectionError
 from apps.sage200.field_mapper import Sage200FieldMapper, MappingError
 from apps.sage200.irn_writer import Sage200IRNWriter
-from apps.firs.client import FIRSClient
-from apps.firs.invoice_schema import UBLInvoiceBuilder
+from apps.firs.providers import get_provider
 from apps.invoices.models import (
     Invoice, InvoiceLine, InvoiceStatus, InvoiceType,
     DocumentType, SubmissionLog
@@ -51,11 +50,15 @@ class InvoicePipeline:
     def __init__(self, company: ClientCompany):
         self.company  = company
         self.odbc     = Sage200ODBCClient(company)
-        self.firs     = FIRSClient(
-            api_key=company.firs_api_key or None,
-            secret_key=company.firs_secret_key or None,
-        )
+        self._provider = None
         self.irn_writer = Sage200IRNWriter(company)
+
+    @property
+    def provider(self):
+        """Access Point Provider adapter (DigiTax, Interswitch, ...) for this client."""
+        if self._provider is None:
+            self._provider = get_provider(self.company)
+        return self._provider
 
     # ──────────────────────────────────────────────────────────
     # MAIN ENTRY POINT
@@ -128,23 +131,26 @@ class InvoicePipeline:
     # SINGLE INVOICE PROCESSING
     # ──────────────────────────────────────────────────────────
 
-    def _process_single(self, raw: Dict) -> str:
+    def _process_single(self, raw: Dict, existing: Optional[Invoice] = None) -> str:
         """
         Process one invoice through the full pipeline.
         Returns: "submitted" | "cleared" | "failed" | "skipped"
+
+        Pass `existing` to re-submit an invoice already in the middleware DB
+        (manual submit / retry). Without it, invoices already seen are skipped.
         """
         sage_id     = str(raw.get("invoice_id", ""))
         invoice_num = raw.get("invoice_number", "?")
 
         # ── Check: Already processed? ─────────────────────────
-        if Invoice.objects.filter(
+        if existing is None and Invoice.objects.filter(
             client=self.company,
             sage_invoice_id=sage_id
         ).exists():
             logger.debug(f"[Pipeline] Invoice {invoice_num} already in system — skipping")
             return "skipped"
 
-        invoice = None
+        invoice = existing
         try:
             # ── Step A: Map Sage 200 fields → FIRS UBL ────────
             mapper = Sage200FieldMapper(self.company, raw)
@@ -152,8 +158,8 @@ class InvoicePipeline:
 
             # ── Step B: Validate buyer TIN (B2B only) ─────────
             if mapped.get("buyer_tin"):
-                tin_result = self.firs.validate_tin(mapped["buyer_tin"])
-                if not tin_result["success"]:
+                tin_result = self.provider.validate_tin(mapped["buyer_tin"])
+                if tin_result.get("success") is False:
                     logger.warning(
                         f"[Pipeline] Buyer TIN invalid for {invoice_num}: "
                         f"{mapped['buyer_tin']}"
@@ -162,30 +168,24 @@ class InvoicePipeline:
                     mapped["buyer_tin"] = ""
 
             # ── Step C: Save invoice record to our DB ─────────
-            invoice = self._save_invoice(mapped, sage_id, raw)
+            if invoice is None:
+                invoice = self._save_invoice(mapped, sage_id, raw)
 
-            # ── Step D: Build UBL payload ──────────────────────
-            builder = UBLInvoiceBuilder(mapped)
-            if mapped.get("invoice_type") == InvoiceType.B2C:
-                payload = builder.build_b2c()
-            else:
-                payload = builder.build_b2b()
-
-            # Save payload for audit trail
-            invoice.ubl_payload = payload
             invoice.status = InvoiceStatus.SUBMITTING
             invoice.submission_attempts += 1
             invoice.last_attempt_at = dj_timezone.now()
+            invoice.app_provider = self.provider.name
             invoice.save(update_fields=[
-                "ubl_payload", "status",
-                "submission_attempts", "last_attempt_at"
+                "status", "submission_attempts", "last_attempt_at", "app_provider"
             ])
 
-            # ── Step E: Submit to FIRS ─────────────────────────
-            if mapped.get("invoice_type") == InvoiceType.B2C:
-                result = self.firs.report_b2c_invoice(payload)
-            else:
-                result = self.firs.submit_b2b_invoice(payload)
+            # ── Step D+E: Build provider payload and submit via the APP ──
+            result  = self.provider.submit(mapped).as_pipeline_result()
+            payload = result.get("payload") or {}
+
+            # Save exact payload sent, for audit trail
+            invoice.ubl_payload = payload
+            invoice.save(update_fields=["ubl_payload"])
 
             # Log this submission attempt
             self._log_submission(invoice, payload, result)
@@ -228,6 +228,11 @@ class InvoicePipeline:
         irn  = firs_data.get("irn", "") or firs_data.get("IRN", "")
         csid = firs_data.get("csid", "") or firs_data.get("CSID", "")
         qr   = firs_data.get("qrCode", "") or firs_data.get("qr_code", "")
+        if not irn:
+            # APP accepted the call but returned no IRN — do not mark cleared
+            return self._handle_failure(
+                invoice, {"error": {"code": "NO_IRN", "message": "APP response contained no IRN"}}
+            )
 
         logger.info(
             f"[Pipeline] FIRS cleared invoice {invoice.sage_invoice_number}. "
@@ -240,12 +245,16 @@ class InvoicePipeline:
         invoice.csid         = csid
         invoice.qr_code      = qr
         invoice.cleared_at   = dj_timezone.now()
-        invoice.firs_response = firs_data
+        invoice.firs_response = firs_data.get("raw", firs_data)
+        invoice.provider_invoice_id = firs_data.get("provider_invoice_id", "")
+        invoice.provider_status     = firs_data.get("provider_status", "")
+        invoice.provider_status_checked_at = dj_timezone.now()
         invoice.error_code    = ""
         invoice.error_message = ""
         invoice.save(update_fields=[
             "status", "irn", "csid", "qr_code",
             "cleared_at", "firs_response",
+            "provider_invoice_id", "provider_status", "provider_status_checked_at",
             "error_code", "error_message"
         ])
 
@@ -382,7 +391,7 @@ class InvoicePipeline:
         SubmissionLog.objects.create(
             invoice=invoice,
             attempt_number=invoice.submission_attempts,
-            endpoint=f"/invoices/{'b2c' if invoice.is_b2c else 'b2b'}",
+            endpoint=f"{result.get('provider', '')}:/invoices ({'b2c' if invoice.is_b2c else 'b2b'})",
             request_payload=payload,
             response_status=result.get("status_code"),
             response_body=result.get("data") or result.get("error"),

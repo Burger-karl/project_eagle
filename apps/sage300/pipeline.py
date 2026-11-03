@@ -14,8 +14,7 @@ from apps.core.models import ClientCompany
 from apps.sage300.odbc_client import Sage300ODBCClient, Sage300ConnectionError
 from apps.sage300.field_mapper import Sage300FieldMapper, MappingError
 from apps.sage300.irn_writer import Sage300IRNWriter
-from apps.firs.client import FIRSClient
-from apps.firs.invoice_schema import UBLInvoiceBuilder
+from apps.firs.providers import get_provider
 from apps.invoices.models import (
     Invoice, InvoiceLine, InvoiceStatus,
     InvoiceType, DocumentType, SubmissionLog
@@ -37,12 +36,16 @@ class Sage300Pipeline:
     def __init__(self, company: ClientCompany):
         self.company    = company
         self.odbc       = Sage300ODBCClient(company)
-        self.firs       = FIRSClient(
-            api_key=company.firs_api_key or None,
-            secret_key=company.firs_secret_key or None,
-        )
+        self._provider  = None
         self.irn_writer = Sage300IRNWriter(company)
         self.source     = "SAGE300"
+
+    @property
+    def provider(self):
+        """Access Point Provider adapter (DigiTax, Interswitch, ...) for this client."""
+        if self._provider is None:
+            self._provider = get_provider(self.company)
+        return self._provider
 
     def run(self, since: Optional[datetime] = None) -> Dict:
         """
@@ -71,13 +74,13 @@ class Sage300Pipeline:
         logger.info(f"[Sage300 Pipeline] Complete: {results}")
         return results
 
-    def _process_single(self, raw: Dict) -> str:
-        """Process one Sage 300 invoice through the full pipeline."""
+    def _process_single(self, raw: Dict, existing: Optional[Invoice] = None) -> str:
+        """Process one Sage 300 invoice. Pass `existing` to re-submit (retry)."""
         sage_id     = str(raw.get("invoice_id", ""))
         invoice_num = raw.get("invoice_number", "?")
 
         # Check if already processed
-        if Invoice.objects.filter(
+        if existing is None and Invoice.objects.filter(
             client=self.company,
             sage_invoice_id=sage_id,
             source_system=self.source,
@@ -85,7 +88,7 @@ class Sage300Pipeline:
             logger.debug(f"[Sage300 Pipeline] {invoice_num} already processed — skipping")
             return "skipped"
 
-        invoice = None
+        invoice = existing
         try:
             # Map fields
             mapper = Sage300FieldMapper(self.company, raw)
@@ -93,39 +96,30 @@ class Sage300Pipeline:
 
             # Validate buyer TIN
             if mapped.get("buyer_tin"):
-                tin_result = self.firs.validate_tin(mapped["buyer_tin"])
-                if not tin_result["success"]:
+                tin_result = self.provider.validate_tin(mapped["buyer_tin"])
+                if tin_result.get("success") is False:
                     logger.warning(
                         f"[Sage300 Pipeline] Invalid buyer TIN for {invoice_num}"
                     )
                     mapped["buyer_tin"] = ""
 
             # Save to middleware DB
-            invoice = self._save_invoice(mapped, sage_id, raw)
+            if invoice is None:
+                invoice = self._save_invoice(mapped, sage_id, raw)
 
-            # Build UBL payload
-            builder = UBLInvoiceBuilder(mapped)
-            payload = (
-                builder.build_b2c()
-                if mapped.get("invoice_type") == InvoiceType.B2C
-                else builder.build_b2b()
-            )
-
-            invoice.ubl_payload         = payload
             invoice.status              = InvoiceStatus.SUBMITTING
             invoice.submission_attempts += 1
             invoice.last_attempt_at     = dj_timezone.now()
+            invoice.app_provider        = self.provider.name
             invoice.save(update_fields=[
-                "ubl_payload", "status",
-                "submission_attempts", "last_attempt_at"
+                "status", "submission_attempts", "last_attempt_at", "app_provider"
             ])
 
-            # Submit to FIRS
-            result = (
-                self.firs.report_b2c_invoice(payload)
-                if mapped.get("invoice_type") == InvoiceType.B2C
-                else self.firs.submit_b2b_invoice(payload)
-            )
+            # Build provider payload and submit via the APP
+            result  = self.provider.submit(mapped).as_pipeline_result()
+            payload = result.get("payload") or {}
+            invoice.ubl_payload = payload
+            invoice.save(update_fields=["ubl_payload"])
 
             # Log submission
             self._log_submission(invoice, payload, result)
@@ -152,6 +146,10 @@ class Sage300Pipeline:
         irn = firs_data.get("irn") or firs_data.get("IRN", "")
         csid = firs_data.get("csid") or firs_data.get("CSID", "")
         qr   = firs_data.get("qrCode") or firs_data.get("qr_code", "")
+        if not irn:
+            return self._handle_failure(
+                invoice, {"error": {"code": "NO_IRN", "message": "APP response contained no IRN"}}
+            )
 
         logger.info(
             f"[Sage300 Pipeline] FIRS cleared {invoice.sage_invoice_number}. "
@@ -162,7 +160,10 @@ class Sage300Pipeline:
             status=InvoiceStatus.CLEARED,
             irn=irn, csid=csid, qr_code=qr,
             cleared_at=dj_timezone.now(),
-            firs_response=firs_data,
+            firs_response=firs_data.get("raw", firs_data),
+            provider_invoice_id=firs_data.get("provider_invoice_id", ""),
+            provider_status=firs_data.get("provider_status", ""),
+            provider_status_checked_at=dj_timezone.now(),
             error_code="", error_message="",
         )
 
@@ -263,10 +264,7 @@ class Sage300Pipeline:
         SubmissionLog.objects.create(
             invoice=invoice,
             attempt_number=invoice.submission_attempts,
-            endpoint=(
-                f"/invoices/"
-                f"{'b2c' if invoice.is_b2c else 'b2b'}"
-            ),
+            endpoint=f"{result.get('provider', '')}:/invoices ({'b2c' if invoice.is_b2c else 'b2b'})",
             request_payload=payload,
             response_status=result.get("status_code"),
             response_body=result.get("data") or result.get("error"),

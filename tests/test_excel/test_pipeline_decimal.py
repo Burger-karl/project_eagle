@@ -13,6 +13,7 @@ from apps.core.models import ClientCompany
 from apps.excel_intake.excel_parser import ParseResult
 from apps.excel_intake.models import ExcelInvoice, ExcelRowStatus, ExcelUpload
 from apps.excel_intake.pipeline import ExcelPipeline
+from tests.fake_app import patch_provider
 
 pytestmark = pytest.mark.django_db
 
@@ -27,7 +28,7 @@ def test_a_plain_standard_format_row_is_stored_and_sent():
            "vat_amount": 150.0, "gross_amount": 2150.0}
     firs = MagicMock()
     firs.report_b2c_invoice.return_value = {"success": True, "data": {"irn": "IRN-1", "csid": "C"}}
-    with patch("apps.excel_intake.pipeline.FIRSClient", return_value=firs):
+    with patch_provider("apps.excel_intake.pipeline", firs):
         ExcelPipeline(upload, ParseResult([row], [], "hash", 1, {})).run()
 
     saved = ExcelInvoice.objects.get(upload=upload)
