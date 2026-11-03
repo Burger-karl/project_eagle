@@ -13,6 +13,7 @@ from apps.invoices.models import Invoice, InvoiceStatus
 from apps.sage200.odbc_client import Sage200ConnectionError
 from tests.test_dashboard.test_dashboard import make_invoice
 from tests.test_dashboard.test_preview_sage200 import sage_row
+from tests.fake_app import patch_provider
 
 pytestmark = pytest.mark.django_db
 
@@ -54,7 +55,7 @@ def firs():
     ok = {"success": True, "data": {"irn": "IRN-1", "csid": "CSID", "qrCode": ""}}
     client.submit_b2b_invoice.return_value = ok
     client.report_b2c_invoice.return_value = ok
-    with patch(f"{PIPE}.FIRSClient", return_value=client), patch(f"{PIPE}.Sage200IRNWriter") as writer, \
+    with patch_provider(PIPE, client), patch(f"{PIPE}.Sage200IRNWriter") as writer, \
          patch(f"{SB}.broker_reachable", return_value=True), patch("apps.invoices.tasks.retry_single_invoice") as retry:
         writer.return_value.write_irn.return_value = True
         client.retry_task = retry   # lets tests see whether a retry was queued

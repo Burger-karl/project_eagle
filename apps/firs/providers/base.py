@@ -83,6 +83,7 @@ class SubmissionResult:
     provider_status: str = ProviderStatus.UNKNOWN
     raw: Any = None
     error: Optional[str] = None
+    error_code: str = ""
     status_code: Optional[int] = None
     duration_ms: Optional[int] = None
 
@@ -93,7 +94,11 @@ class SubmissionResult:
             "duration_ms": self.duration_ms,
             "payload":     self.payload,
             "provider":    self.provider,
-            "error":       self.error,
+            # Pipelines read error["code"] / error["message"] into Invoice.error_code / error_message
+            "error":       None if self.success else {
+                "code":    self.error_code or (f"HTTP_{self.status_code}" if self.status_code else "APP_ERROR"),
+                "message": self.error or "",
+            },
         }
         if self.success:
             result["data"] = {
@@ -237,6 +242,18 @@ class AccessPointProvider(abc.ABC):
                 if data.get(key):
                     return str(data[key])
         return str(data)
+
+    @staticmethod
+    def _error_code(response: Dict[str, Any]) -> str:
+        """Best-effort machine-readable error code from an APP error response."""
+        data = response.get("data")
+        if isinstance(data, dict):
+            for key in ("code", "error_code", "errorCode"):
+                if data.get(key):
+                    return str(data[key])[:50]
+        if response.get("status_code"):
+            return f"HTTP_{response['status_code']}"
+        return "APP_UNREACHABLE"
 
     @staticmethod
     def _unwrap(data: Any) -> Dict[str, Any]:

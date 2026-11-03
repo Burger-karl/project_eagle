@@ -182,6 +182,7 @@ class DigiTaxProvider(AccessPointProvider):
             return SubmissionResult(
                 success=False, provider=self.name, payload=payload,
                 raw=response.get("data"), error=response.get("error"),
+                error_code=self._error_code(response),
                 status_code=response.get("status_code"),
                 duration_ms=response.get("duration_ms"),
                 provider_status=ProviderStatus.FAILED,
@@ -204,11 +205,11 @@ class DigiTaxProvider(AccessPointProvider):
             payload = self.build_payload(mapped)
         except ProviderConfigError as exc:
             return SubmissionResult(success=False, provider=self.name, error=str(exc),
-                                    provider_status=ProviderStatus.FAILED)
+                                    error_code="APP_CONFIG", provider_status=ProviderStatus.FAILED)
         except Exception as exc:  # noqa: BLE001 — bad mapped data must not crash the pipeline
             return SubmissionResult(success=False, provider=self.name,
                                     error=f"Payload build failed: {exc!r}",
-                                    provider_status=ProviderStatus.FAILED)
+                                    error_code="PAYLOAD_ERROR", provider_status=ProviderStatus.FAILED)
         return self._to_result(self._request("POST", "/invoices", json=payload), payload)
 
     def get_status(self, provider_invoice_id: str) -> SubmissionResult:

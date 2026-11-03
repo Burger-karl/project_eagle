@@ -354,3 +354,21 @@ def test_sync_provider_statuses_moves_signed_to_transmitted():
     with patch.object(DigiTaxProvider, "get_status") as gs:
         assert sync_provider_statuses() == {"updated": 0, "errors": 0}
         gs.assert_not_called()
+
+
+def test_digitax_payload_with_decimal_amounts_is_json_safe():
+    """Mappers return Decimal; requests' json= would crash on it if any slipped through."""
+    import json
+    line = dict(mapped_invoice()["lines"][0], quantity=Decimal("2"), unit_price=Decimal("1000.00"),
+                vat_rate=Decimal("7.5"))
+    payload = DigiTaxProvider(credentials={"api_key": "k"}, base_url=DIGITAX).build_payload(
+        mapped_invoice(lines=[line], due_date=date(2026, 12, 1)))
+    json.dumps(payload)
+    assert payload["items"][0]["unit_price"] == 1000.0 and payload["due_date"] == "2026-12-01"
+
+
+def test_failed_result_carries_error_code_for_the_pipeline():
+    r = SubmissionResult(success=False, provider="digitax", error="bad tin", error_code="TIN_INVALID")
+    assert r.as_pipeline_result()["error"] == {"code": "TIN_INVALID", "message": "bad tin"}
+    r = SubmissionResult(success=False, provider="digitax", error="down", status_code=503)
+    assert r.as_pipeline_result()["error"]["code"] == "HTTP_503"

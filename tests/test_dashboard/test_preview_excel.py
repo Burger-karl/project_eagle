@@ -62,7 +62,7 @@ def test_flags_an_invoice_whose_lines_do_not_add_up(company, tmp_path):
 
 
 def test_saves_nothing_and_never_calls_firs(company, tmp_path):
-    with patch("apps.excel_intake.pipeline.FIRSClient") as firs:
+    with patch("apps.excel_intake.pipeline.get_provider") as firs:
         preview(tmp_path, workbook())
     firs.assert_not_called()
     assert ExcelUpload.objects.count() == 0 and ExcelInvoice.objects.count() == 0

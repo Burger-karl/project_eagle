@@ -13,6 +13,7 @@ import pytest
 from apps.core.models import ClientCompany
 from apps.excel_intake.models import ExcelInvoice, ExcelRowStatus, ExcelUpload
 from apps.excel_intake.tasks import retry_failed_excel_rows
+from tests.fake_app import patch_provider
 
 pytestmark = pytest.mark.django_db
 RAW = {"row_number": 2, "invoice_number": "S-1", "invoice_date": "2026-09-01", "buyer_name": "Walk-in",
@@ -34,7 +35,7 @@ def failed_row():
 def firs_returning(result):
     client = MagicMock()
     client.report_b2c_invoice.return_value = result
-    return patch("apps.excel_intake.pipeline.FIRSClient", return_value=client), client
+    return patch_provider("apps.excel_intake.pipeline", client), client
 
 
 def test_a_successful_retry_updates_the_same_row(failed_row):
