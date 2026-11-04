@@ -52,3 +52,7 @@ htmlcov/
 
 # Docker
 *.env.local
+
+# Celery Beat runtime state
+celerybeat-schedule*
+celerybeat.pid
