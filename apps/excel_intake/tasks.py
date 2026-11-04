@@ -181,6 +181,7 @@ def retry_failed_excel_rows():
     failed_rows = ExcelInvoice.objects.filter(
         status=ExcelRowStatus.FAILED,
         submission_attempts__lt=5,
+        upload__client__is_active=True,  # never retry inactive / demo clients
     ).select_related("upload__client")
 
     count = failed_rows.count()

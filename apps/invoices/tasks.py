@@ -123,6 +123,8 @@ def submit_single_invoice(self, invoice_id: str):
     """
     from apps.invoices.models import Invoice, InvoiceStatus
     from apps.invoices.pipeline import InvoicePipeline
+    from apps.sage200.odbc_client import Sage200ConnectionError
+    from apps.sage300.odbc_client import Sage300ConnectionError
 
     try:
         invoice = Invoice.objects.select_related("client").get(id=invoice_id)
@@ -133,6 +135,11 @@ def submit_single_invoice(self, invoice_id: str):
     if invoice.status in (InvoiceStatus.CLEARED, InvoiceStatus.WRITTEN_BACK) or invoice.irn:
         logger.info(f"[Task] Invoice {invoice.sage_invoice_number} already cleared — skipping")
         return {"status": "already_cleared", "irn": invoice.irn}
+
+    if not invoice.client.is_active:
+        # e.g. the "Demo client (sample data)" from seed_demo_data — never send it
+        logger.info(f"[Task] {invoice.client.name} is inactive — not submitting {invoice.sage_invoice_number}")
+        return {"status": "client_inactive"}
 
     logger.info(f"[Task] Manually submitting invoice {invoice.sage_invoice_number}")
 
@@ -152,6 +159,19 @@ def submit_single_invoice(self, invoice_id: str):
         # Pass the existing record so the pipeline re-submits instead of skipping it
         outcome = pipeline._process_single(raw, existing=invoice)
         return {"outcome": outcome, "invoice": invoice.sage_invoice_number}
+
+    except (Sage200ConnectionError, Sage300ConnectionError) as e:
+        # The ERP is unreachable. Retrying inside this task would block the worker
+        # for ~30 s per attempt; instead push the next attempt out and let
+        # retry_failed_submissions pick it up later.
+        from datetime import timedelta
+        Invoice.objects.filter(id=invoice.id).update(
+            next_retry_at=timezone.now() + timedelta(minutes=30),
+            error_code="SAGE_UNREACHABLE",
+            error_message=str(e)[:1000],
+        )
+        logger.error(f"[Task] {invoice.source_system} unreachable for {invoice.sage_invoice_number}; next try in 30 min")
+        return {"error": "sage_unreachable"}
 
     except Exception as e:
         logger.exception(f"[Task] Error submitting {invoice.sage_invoice_number}: {e}")
@@ -179,6 +199,7 @@ def retry_failed_submissions():
         status=InvoiceStatus.FAILED,
         submission_attempts__lt=5,
         next_retry_at__lte=now,
+        client__is_active=True,          # never retry inactive / demo clients
     ).select_related("client")
 
     count = due_for_retry.count()
